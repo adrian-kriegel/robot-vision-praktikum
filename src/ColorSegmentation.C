@@ -42,13 +42,16 @@ class ColorSegmentation_AdrianKriegel : public ColorSegmentationTemplateRGB {
   bool interpolate_histogram_;
 
   float alpha_hist_;
-  float alpha_hist_segment_;
+  float alpha_segment_;
 
   Histogram3D* last_hist_;
   GrayImage* last_segmentation_;
 
   // max. percentage of black pixels to count before an average distance is reported
   float max_stripe_fill_;
+
+  float speed_;
+  float steer_;
 
 public:
 
@@ -82,7 +85,14 @@ public:
    */
   GrayImage segmentImage( BGRImage const& inputImage )
   {
+
+	  bool init = last_segmentation_ == NULL;
     // create new segmented image (do not change)
+    if(init)
+    {
+      last_segmentation_ = new GrayImage( inputImage.width(), inputImage.height() );
+    }
+
     GrayImage segmentedImage( inputImage.width(), inputImage.height() );
 
     // compute the histogram roi (mask) and the histogram of the image
@@ -131,14 +141,21 @@ public:
           hist_val = mHistogram.at(b, g, r);
         }
 
-        // "compute" segmentation for current pixel
-        // this segmentation have to be replaced
-        // by a more sophisticated one
-        if (hist_val >= mThreshold)
+        if (init)
+        {
+          (*last_segmentation_)(x,y) = hist_val*255.0;
+        }
+        else
+        {
+          (*last_segmentation_)(x,y) *= alpha_segment_;
+          (*last_segmentation_)(x,y) += (1-alpha_segment_)*hist_val*255.0;
+        }
+
+        if ((*last_segmentation_)(x,y) > mThreshold*255.0)
         {
           segmentedImage(x,y) = 255;
         }
-        else
+        else 
         {
           segmentedImage(x,y) = 0;
         }
@@ -273,13 +290,13 @@ public:
    */
   mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
   {
-    // split the image into vertical stripes
+	// split the image into vertical stripes
     uint8 num_stripes = 7;
 
     uint16 distances[] = { 0,0,0,0,0,0,0 };
 
     // where to start counting
-    uint16 offsets[] = { 0, 15, 25, 30, 25, 15, 0 };
+    uint16 offsets[] = { 0, 15, 30, 30, 30, 15, 0 };
 
     uint8 max_distance_index;
     uint16 max_distance = 0;
@@ -293,16 +310,21 @@ public:
     uint16 max_stripe_counter = stripe_width*segmentedImage.height()*max_stripe_fill_;
 
     // sum of all counted distances per stripe
-    uint16 sum_distances;
+    uint16 sum_distances_i;
 
     for (uint8 i = 0; i < num_stripes; i++)
     {
       start = i*stripe_width;
       counter = 0;
-      sum_distances = 0;
+      sum_distances_i = 0;
 
       // iterate from bottom to top
-      for (int y = segmentedImage.height() - 1 - offsets[i]; y >= 0; y--)
+      for (
+        int y = segmentedImage.height() - 1 - offsets[i]; 
+        y >= segmentedImage.height()/2 && 
+        counter < max_stripe_counter; 
+        y--
+      )
       {
         // iterate through the stripe left to right
         for (uint16 x = start; x < start+stripe_width; x++)
@@ -310,35 +332,56 @@ public:
           if (segmentedImage(x,y) < 255)
           {
             counter++;
-            sum_distances += y;
+            sum_distances_i += y;
           }
         }
+      }
 
-        if (counter >= max_stripe_counter)
-        {
-          distances[i] = sum_distances / counter;
+      distances[i] = sum_distances_i / counter;
 
-          if (distances[i] > max_distance)
-          {
-            max_distance = distances[i];
-            max_distance_index = i;
-          }
-
-          break;
-        }
+      if (distances[i] > max_distance)
+      {
+        max_distance = distances[i];
+        max_distance_index = i;
       }
     }
 
-    double max_angle = PI/3;
+
+    double max_angle = PI/2;
 
     // set throttle and steering angle depending on the segmented image
-    double throttle = (double)max_distance / 600.0;	// range 0 - 1 suggested
-    double angle = (float)(max_distance_index - 3) * max_angle/num_stripes;
+    double throttle = (double)max_distance;	// range 0 - 1 suggested
+    double angle = 0;
+
+    int sum_distances = 0;
+
+    for(int i = 0; i < num_stripes; i++)
+    {
+      sum_distances += distances[i];
+      angle += -(float)(i - 3) * max_angle * distances[i];
+    }
+
+    angle = angle/sum_distances;
+
+    
+    int dist_left = (distances[0] + distances[1] + distances[2])/3;
+    int dist_center = (distances[2] + distances[3] + distances[4])/3;
+    int dist_right = (distances[4] + distances[5] + distances[6])/3;
+
+    if (
+      dist_center < dist_left && 
+      dist_center < dist_right &&
+      std::abs(angle) < 0.2
+    )
+    {
+      angle = -(float)(max_distance_index - 3) * max_angle;
+    }
+
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
     // move sideways while looking forward
-    return mira::Velocity2( throttle, 0, angle);
+    return mira::Velocity2( throttle*speed_, 0, angle*steer_);
   }
 
   /**
@@ -352,14 +395,19 @@ public:
     r.property( "threshold", mThreshold, "", 0.2, PropertyHints::limits(0, 1) );
     r.property( "bins", mBins, "", 6, PropertyHints::minimum(1) );
     r.property( "interpolate_histogram", interpolate_histogram_, "", false);
-    r.property( "mask_height", mask_height_, "", 30, PropertyHints::limits(0, 100) );
+    r.property( "mask_height", mask_height_, "", 40, PropertyHints::limits(0, 100) );
     r.property( "mask_width_top", mask_width_top_, "", 90, PropertyHints::limits(0, 140) );
     r.property( "mask_width_bottom", mask_width_bottom_, "", 200, PropertyHints::limits(0, 200) );
-    r.property( "alpha", alpha_hist_, "", 0.5, PropertyHints::limits(0, 200) );
-    r.property( "max_stripe_fill", max_stripe_fill_, "", 0.04, PropertyHints::limits(1, 300) );
+    r.property( "alpha_hist", alpha_hist_, "", 0.5, PropertyHints::limits(0, 1) );
+    r.property( "alpha_segment", alpha_segment_, "", 0.1, PropertyHints::limits(0, 1) );
+    
+    r.property( "max_stripe_fill", max_stripe_fill_, "", 0.2, PropertyHints::limits(0.0, 1.0) );
+
+    r.property( "speed", speed_, "", 0.008, PropertyHints::limits(0.0, 1.0) );
+    r.property( "steer", steer_, "", 1.3, PropertyHints::limits(-1.0, 1.0) );
 
 
-    delete last_hist_;
+    if (last_hist_ != NULL) delete last_hist_;
     last_hist_ = NULL;
 
     // add your own member variables here
