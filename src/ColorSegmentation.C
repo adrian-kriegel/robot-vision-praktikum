@@ -7,11 +7,18 @@
 #include <serialization/Serialization.h>
 #include <serialization/DefaultInitializer.h>
 #include <image/Img.h>
+#include <array>
 
 using namespace std;
 using namespace mira;
 using namespace rv;
 using namespace student;
+
+#ifndef NULL
+#define NULL   ((void *) 0)
+#endif
+
+#define PI 3.14
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -34,7 +41,14 @@ class ColorSegmentation_AdrianKriegel : public ColorSegmentationTemplateRGB {
 
   bool interpolate_histogram_;
 
-  float alpha_;
+  float alpha_hist_;
+  float alpha_hist_segment_;
+
+  Histogram3D* last_hist_;
+  GrayImage* last_segmentation_;
+
+  // max. percentage of black pixels to count before an average distance is reported
+  float max_stripe_fill_;
 
 public:
 
@@ -47,6 +61,15 @@ public:
     // do initialization stuff
 
     // you might want to initialize some class members etc.
+
+    last_hist_ = NULL;
+    last_segmentation_ = NULL;
+  }
+
+  ~ColorSegmentation_AdrianKriegel()
+  {
+    if(last_hist_ != NULL ) delete last_hist_;
+    if(last_segmentation_ != NULL) delete last_segmentation_;
   }
 
   /**
@@ -229,11 +252,16 @@ public:
         hist /= sum;
     }
 
-    // Note: you may wish to save the histogram to a member variable
-    // at this point in order to access the old histogram in the next
-    // time step.
+    if (last_hist_ == NULL)
+    {
+      last_hist_ = new Histogram3D(nrOfBins);
+      *last_hist_ += hist;
+    }
 
-    return hist;
+    *last_hist_ *= alpha_hist_;
+    *last_hist_ += (1-alpha_hist_)*hist;
+
+    return *last_hist_;
   }
 
   /**
@@ -245,18 +273,72 @@ public:
    */
   mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
   {
-    // Call the reference implementation
-    // Remove or comment the following line to make use of your own implementation!!
-    return CS_RGB::getDriveCommand( segmentedImage );
+    // split the image into vertical stripes
+    uint8 num_stripes = 7;
+
+    uint16 distances[] = { 0,0,0,0,0,0,0 };
+
+    // where to start counting
+    uint16 offsets[] = { 0, 15, 25, 30, 25, 15, 0 };
+
+    uint8 max_distance_index;
+    uint16 max_distance = 0;
+
+    uint16 stripe_width = segmentedImage.width() / num_stripes;
+
+    uint16 start;
+
+    // how many black pixels have been counted 
+    uint16 counter;
+    uint16 max_stripe_counter = stripe_width*segmentedImage.height()*max_stripe_fill_;
+
+    // sum of all counted distances per stripe
+    uint16 sum_distances;
+
+    for (uint8 i = 0; i < num_stripes; i++)
+    {
+      start = i*stripe_width;
+      counter = 0;
+      sum_distances = 0;
+
+      // iterate from bottom to top
+      for (int y = segmentedImage.height() - 1 - offsets[i]; y >= 0; y--)
+      {
+        // iterate through the stripe left to right
+        for (uint16 x = start; x < start+stripe_width; x++)
+        {
+          if (segmentedImage(x,y) < 255)
+          {
+            counter++;
+            sum_distances += y;
+          }
+        }
+
+        if (counter >= max_stripe_counter)
+        {
+          distances[i] = sum_distances / counter;
+
+          if (distances[i] > max_distance)
+          {
+            max_distance = distances[i];
+            max_distance_index = i;
+          }
+
+          break;
+        }
+      }
+    }
+
+    double max_angle = PI/3;
 
     // set throttle and steering angle depending on the segmented image
-    double throttle=.3;	// range 0 - 1 suggested
-    double angle=0;		// range -pi - +pi suggested
+    double throttle = (double)max_distance / 600.0;	// range 0 - 1 suggested
+    double angle = (float)(max_distance_index - 3) * max_angle/num_stripes;
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
     // move sideways while looking forward
-    return mira::Velocity2( throttle, 0, angle );
+    return mira::Velocity2( throttle, 0, angle);
   }
 
   /**
@@ -267,14 +349,18 @@ public:
   void reflect( Reflector& r ) {
     ColorSegmentationTemplate::reflect( r );
 
-    r.property( "threshold", mThreshold, "", 0.1, PropertyHints::limits(0, 1) );
+    r.property( "threshold", mThreshold, "", 0.2, PropertyHints::limits(0, 1) );
     r.property( "bins", mBins, "", 6, PropertyHints::minimum(1) );
     r.property( "interpolate_histogram", interpolate_histogram_, "", false);
-    r.property( "mask_height", mask_height_, "", 20, PropertyHints::limits(0, 100) );
-    r.property( "mask_width_top", mask_width_top_, "", 80, PropertyHints::limits(0, 140) );
-    r.property( "mask_width_bottom", mask_width_bottom_, "", 140, PropertyHints::limits(0, 200) );
-    r.property( "alpha", alpha_, "", 0.5, PropertyHints::limits(0, 200) );
+    r.property( "mask_height", mask_height_, "", 30, PropertyHints::limits(0, 100) );
+    r.property( "mask_width_top", mask_width_top_, "", 90, PropertyHints::limits(0, 140) );
+    r.property( "mask_width_bottom", mask_width_bottom_, "", 200, PropertyHints::limits(0, 200) );
+    r.property( "alpha", alpha_hist_, "", 0.5, PropertyHints::limits(0, 200) );
+    r.property( "max_stripe_fill", max_stripe_fill_, "", 0.04, PropertyHints::limits(1, 300) );
 
+
+    delete last_hist_;
+    last_hist_ = NULL;
 
     // add your own member variables here
     // use
