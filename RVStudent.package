@@ -1,0 +1,5 @@
+MIRA_DESCRIPTION("Student Implementation for RV practical work.")
+MIRA_AUTHOR("Ronny Stricker")
+MIRA_TAGS("robot;simulation")
+
+MIRA_REQUIRE_PACKAGE(RVBase)
