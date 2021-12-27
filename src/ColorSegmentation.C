@@ -20,6 +20,11 @@ using namespace student;
 
 #define PI 3.14
 
+float clamp(float val, float minmax)
+{
+  return std::min(std::max(val, -minmax), minmax);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // start implementing by typing "colorTemplate" and hitting
@@ -51,7 +56,10 @@ class ColorSegmentation_AdrianKriegel : public ColorSegmentationTemplateRGB {
   float max_stripe_fill_;
 
   float speed_;
-  float steer_;
+  float steer_linear_;
+  float steer_quadratic_;
+
+  float steer_max_;
 
   float last_angle_;
   float alpha_angle_;
@@ -288,114 +296,7 @@ public:
     return *last_hist_;
   }
 
-  /**
-   * @brief Calculate drive command depending on given segmentation
-   * This function should calculate a reasonable drive command (steering angle,
-   * and velocity) depending on the given segmentation.
-   * @param[in] segmentedImage Image with the ground/obstacle segmentation
-   * @return drive command as velocity
-  mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
-  {
-  // split the image into vertical stripes
-    uint8 num_stripes = 7;
 
-    uint16 distances[] = { 0,0,0,0,0,0,0 };
-
-    // where to start counting
-    uint16 offsets[] = { 0, 15, 30, 30, 30, 15, 0 };
-
-    uint8 max_distance_index;
-    uint16 max_distance = 0;
-
-    uint16 stripe_width = segmentedImage.width() / num_stripes;
-
-    uint16 start;
-
-    // how many black pixels have been counted 
-    float counter;
-    uint16 max_stripe_counter = stripe_width*segmentedImage.height()*max_stripe_fill_;
-
-    // sum of all counted distances per stripe
-    uint16 sum_distances_i;
-
-    for (uint8 i = 0; i < num_stripes; i++)
-    {
-      start = i*stripe_width;
-      counter = 0.0;
-      sum_distances_i = 0;
-
-      // iterate from bottom to top
-      for (
-        int y = segmentedImage.height() - 1 - offsets[i]; 
-        y >= segmentedImage.height()/2 && 
-        counter < max_stripe_counter; 
-        y--
-      )
-      {
-        // iterate through the stripe left to right
-        for (uint16 x = start; x < start+stripe_width; x++)
-        {
-          counter += (1-(*last_segmentation_)(x,y)/255.0);
-          sum_distances_i += y*(1-(*last_segmentation_)(x,y)/255.0);
-        }
-      }
-
-      distances[i] = sum_distances_i / counter;
-
-      if (distances[i] > max_distance)
-      {
-        max_distance = distances[i];
-        max_distance_index = i;
-      }
-    }
-
-    uint16 left_wall_count = 0;
-    uint16 right_wall_count = 0;
-    
-    for(int y = 0; y < segmentedImage.height(); y++)
-    {
-      for (int x = 0; x < 30; x++)
-      {
-        if(segmentedImage(x,y) < 255)
-        {
-          left_wall_count++;
-        }
-      }
-
-      for (int x = segmentedImage.width()-30; x < segmentedImage.width(); x++)
-      {
-        if(segmentedImage(x,y) < 255)
-        {
-          right_wall_count++;
-        }
-      }
-    }
-
-    double max_angle = PI;
-    double angle = -(float)(max_distance_index - 3)*max_angle*2.0/num_stripes;
-    double throttle = max_distance;
-
-    angle -= avoid_walls_*(left_wall_count-right_wall_count)/(left_wall_count+right_wall_count);
-
-    last_angle_ *= alpha_angle_;
-    last_angle_ += (1.0-alpha_angle_)*angle;
-
-    angle = steer_ * last_angle_;
-
-    if(std::abs(angle) < 0.3)
-    {
-      angle = 0;
-    }
-
-
-    // pass the velocity command to the robot
-    // the second value should be zero since the robot cannot
-    // move sideways while looking forward
-    return mira::Velocity2(throttle*speed_, 0, angle);
-  }
-
-
-   */
   mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
   {
     // split the image into vertical stripes
@@ -423,12 +324,45 @@ public:
 
     total_density /= segmentedImage.width()*segmentedImage.height();
 
-    double angle = steer_*2.0*PI*((density[0]+density[1])-(density[3]+density[4]))/total_density;
-    double throttle = speed_*total_density;
+    double angle = 2.0*PI*((avoid_walls_*density[0]+density[1])-(density[3]+avoid_walls_*density[4]))/total_density;
+
+    last_angle_ *= alpha_angle_;
+    last_angle_ += angle*(1.0-alpha_angle_);
+
+    double angle_full = steer_linear_ * last_angle_ +
+      steer_quadratic_ * last_angle_*std::abs(last_angle_);
+
+    double angle_clamped = clamp(
+      angle_full,
+      steer_max_
+    );
+
+    double throttle = speed_*(total_density + density[2]);
+
+    if (std::abs(angle_full) > 1.5*steer_max_)
+    {
+      throttle = 0.0;
+    }
+
+
+    // obstacle in the center
+    if (
+      density[2] < density[1] && 
+      density[2] < density[3] &&
+      std::abs(angle_clamped) < steer_max_/0.5
+    )
+    {
+      angle_clamped = std::copysign(steer_max_/0.5, angle_clamped);
+    }
+
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
     // move sideways while looking forward
-    return mira::Velocity2( throttle, 0, angle );
+    return mira::Velocity2(
+      std::max(throttle, 0.0),
+      0,
+      angle_clamped
+    );
   }
 
 
@@ -440,21 +374,24 @@ public:
   void reflect( Reflector& r ) {
     ColorSegmentationTemplate::reflect( r );
 
-    r.property( "threshold", mThreshold, "", 0.1, PropertyHints::limits(0, 1) );
+    r.property( "threshold", mThreshold, "", 0.15, PropertyHints::limits(0, 1) );
     r.property( "bins", mBins, "", 6, PropertyHints::minimum(1) );
-    r.property( "interpolate_histogram", interpolate_histogram_, "", false);
-    r.property( "mask_height", mask_height_, "", 40, PropertyHints::limits(0, 100) );
-    r.property( "mask_width_top", mask_width_top_, "", 90, PropertyHints::limits(0, 140) );
-    r.property( "mask_width_bottom", mask_width_bottom_, "", 200, PropertyHints::limits(0, 200) );
-    r.property( "alpha_hist", alpha_hist_, "", 0.2, PropertyHints::limits(0, 1) );
+    r.property( "mask_height", mask_height_, "", 20, PropertyHints::limits(0, 100) );
+    r.property( "mask_width_top", mask_width_top_, "", 30, PropertyHints::limits(0, 140) );
+    r.property( "mask_width_bottom", mask_width_bottom_, "", 90, PropertyHints::limits(0, 200) );
+    r.property( "alpha_hist", alpha_hist_, "", 0.6, PropertyHints::limits(0, 1) );
     r.property( "alpha_segment", alpha_segment_, "", 0.2, PropertyHints::limits(0, 1) );
-    r.property( "alpha_angle", alpha_angle_, "", 0.3, PropertyHints::limits(0, 1) );
     
     r.property( "max_stripe_fill", max_stripe_fill_, "", 0.6, PropertyHints::limits(0.0, 1.0) );
 
-    r.property( "speed", speed_, "", 18);
-    r.property( "steer", steer_, "", 0.1);
-    r.property( "avoid_walls", avoid_walls_, "", 5.0, PropertyHints::limits(-10, 10) );
+    r.property( "speed", speed_, "", 9);
+
+    r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
+    r.property( "steer_linear", steer_linear_, "", 0.09);
+    r.property( "steer_quadratic", steer_quadratic_, "", 0.002);
+    r.property( "steer_max", steer_max_, "", 1.0);
+    r.property( "avoid_walls_", avoid_walls_, "", 0.3);
+    
 
 
     //if (last_hist_ != NULL) delete last_hist_;
@@ -462,7 +399,7 @@ public:
     last_segmentation_ = NULL;
 
     // add your own member variables here
-    // use
+    // use0.03
     // r.property( "ReadableNameOfVariable", <variable>, "Description", <default value>, <property hints> );
     // to add properties which can be edited. Use the Property hints to force the property to
     // stay within a certain range. E.g. you can use PropertyHints::limits(lower,upper) or PropertyHints::minimum(minimum)
