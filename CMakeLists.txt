@@ -14,7 +14,9 @@ ADD_DEFINITIONS(-Wno-unused-function)
 MIRA_ADD_LIBRARY(ColorSegmentation
     SHARED
     SOURCE
-        src/ColorSegmentation.C
+        src/color-segmentation-rg.cpp
+        #src/color-segmentation-rgb.cpp
+		src/util.cpp
     LINK_LIBS
 		StudentTemplate
     	Reference

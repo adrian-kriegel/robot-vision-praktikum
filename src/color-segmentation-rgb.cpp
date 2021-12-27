@@ -9,21 +9,13 @@
 #include <image/Img.h>
 #include <array>
 
+#include "util.hpp"
+
 using namespace std;
 using namespace mira;
 using namespace rv;
 using namespace student;
-
-#ifndef NULL
-#define NULL   ((void *) 0)
-#endif
-
-#define PI 3.14
-
-float clamp(float val, float minmax)
-{
-  return std::min(std::max(val, -minmax), minmax);
-}
+using namespace util;
 
 ///////////////////////////////////////////////////////////////////////////////
 
