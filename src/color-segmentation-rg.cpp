@@ -1,4 +1,6 @@
 
+#include <mutex>
+
 #include <ColorSegmentationTemplate.h>
 #include <ReferenceCS.h>
 #include <GDBPrint.h>
@@ -9,6 +11,8 @@
 #include <image/Img.h>
 
 #include "util.hpp"
+#include "cs-control.hpp"
+#include "cs-debug.hpp"
 
 using namespace std;
 using namespace mira;
@@ -17,6 +21,8 @@ using namespace student;
 using namespace util;
 
 ///////////////////////////////////////////////////////////////////////////////
+
+#define LOCK_PLOT std::lock_guard<std::mutex> guard(plot_mutex_);
 
 /**
  * @brief Example implementation for steering the robot on the basis of
@@ -44,23 +50,38 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
   float alpha_segment_;
 
   Histogram2D* last_hist_;
-  GrayImage* last_segmentation_;
+
+  GrayImage* segmentation_;
+
+  std::mutex plot_mutex_;
+  GrayImage* debug_plot_;
 
   // max. percentage of black pixels to count before an average distance is reported
   float max_stripe_fill_;
 
   float speed_;
-  float steer_linear_;
-  float steer_quadratic_;
+  float pursuit_dist_;
 
-  float steer_max_;
+  double steer_max_;
 
   float last_angle_;
   float alpha_angle_;
 
   float avoid_walls_;
 
-  float last_throttle_;
+  double last_throttle_;
+  double alpha_throttle_;
+
+  double last_pursuit_x_;
+  double alpha_pursuit_;
+
+  double brake_;
+
+  uint debug_hist_;
+
+  cs_control::PIDController controller_steer_;
+  cs_control::PIDController controller_brake_;
+  
 
 public:
 
@@ -75,10 +96,16 @@ public:
     // you might want to initialize some class members etc.
 
     last_hist_ = NULL;
-    last_segmentation_ = NULL;
+    segmentation_ = NULL;
+    debug_plot_ = NULL;
 
     last_angle_ = 0.0;
     last_throttle_ = 0.0;
+
+    last_pursuit_x_ = 0.5;
+
+    controller_steer_.reset_state();
+    controller_brake_.reset_state();
   }
 
   /**
@@ -92,7 +119,10 @@ public:
   GrayImage segmentImage( BGRImage const& inputImage )
   {
     // create new segmented image
-    GrayImage segmentedImage( inputImage.width(), inputImage.height() );
+    if(segmentation_ == NULL)
+    {
+      segmentation_ = new GrayImage(inputImage.width(), inputImage.height());
+    }
 
     // call function BRG_to_RG (have to be implemented properly)
     // to convert bgr image to rg
@@ -110,7 +140,7 @@ public:
     //return CS_RG::segmentImage( rgImage, mHistogram, mThreshold );
 
     uint8 r,g;
-    double bin_size = 1.0 / mBins;
+    double bin_size = 1.01 / mBins;
 
     // process every single pixel of the input image to generate the segmented image
     for (int y=0; y < inputImage.height(); ++y) {
@@ -125,12 +155,24 @@ public:
         // "compute" segmentation for current pixel
         // this segmentation have to be replaced
         // by a more sophisticated one
-        segmentedImage(x,y) = mHistogram.at(r,g) > mThreshold ? 255 : 0;
+        (*segmentation_)(x,y) = mHistogram.at(r,g) > mThreshold ? 255 : 0;
       }
     }
 
-    return segmentedImage;
+    return debugPlot();
   }
+
+  GrayImage& debugPlot()
+  {
+    if (debug_plot_ == NULL)
+    {
+      debug_plot_ = new GrayImage(segmentation_->width(), segmentation_->height());
+    }
+
+    LOCK_PLOT;
+
+    return *debug_plot_;
+  } 
 
   /**
    * @brief Generate the mask for the computation of the image histogram
@@ -206,7 +248,7 @@ public:
   {
     Histogram2D hist( nrOfBins );
 
-    double bin_size = 1.0 / nrOfBins;
+    double bin_size = 1.01 / nrOfBins;
 
     // cycle through every single pixel of the source image to generate the histogram
     for (int y=0; y < srcImage.height(); ++y)
@@ -265,72 +307,127 @@ public:
    */
   mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
   {
-    // split the image into vertical stripes
+    if (segmentation_ == NULL)
+    {
+      return mira::Velocity2(0,0,0);
+    }
+
+    LOCK_PLOT;
+    // split the image into vertical columns
     uint8 num_stripes = 5;
 
-    float density[] = { 0,0,0,0,0 };
-    float total_density = 0.0;
+    // distance histogram
+    std::vector<double> dist(num_stripes);
+    std::vector<double> dist_left(num_stripes);
+    std::vector<double> dist_right(num_stripes);
 
-    // where to start counting for each stripe
-    uint16 offsets[] = { 15, 30, 30, 30, 15 };
+    // image is split into center and edges 
+    // the center will be used to find the path via a distance histgram
+    // the edges will be used to determine if there is an obstacle just left or right
+    double wall_width = 60/segmentation_->width();
 
-    uint16 stripe_width = segmentedImage.width() / num_stripes;
+    uint8 max_dist_index = cs_control::hist_calc_distances(
+      dist,
+      [img=*segmentation_](uint16 x, uint16 y) { return img(x,y); },
+      segmentation_->width(),
+      segmentation_->height(),
+      max_stripe_fill_,
+      // ignore the walls left and right
+      wall_width, wall_width,
+      // ignore the upper quarter of the image
+      0.25, 0
+    );
+    // create a distance histogram from left to right (image flipped and inverted)
+    uint8 max_dist_index_left = cs_control::hist_calc_distances(
+      dist_right,
+      // flip and invert image
+      [img=*segmentation_](uint16 x, uint16 y) { return 255-img(y,x); },
+      segmentation_->height(),
+      segmentation_->width(),
+      max_stripe_fill_,
+      // only build the histogram from the bottom to the max dist
+      dist[max_dist_index] // using padding_left as image is flipped
+    );
 
-    for (int i = 0; i < num_stripes; i++) 
+    // create a distance histogram from right to left (image flipped and inverted)
+    uint8 max_dist_index_right = cs_control::hist_calc_distances(
+      dist_left,
+      // flip and invert image
+      [img=*segmentation_](uint16 x, uint16 y) { return 255-img(img.width() - y - 1,x); },
+      segmentation_->height(),
+      segmentation_->width(),
+      max_stripe_fill_,
+      dist[max_dist_index]
+    );
+
+    std::vector<double> path(num_stripes);
+
+    cs_control::calc_pursuit_point(
+      path,
+      max_dist_index,
+      dist, dist_left, dist_right
+    );
+
+    uint path_index = pursuit_dist_*(path.size() - 1);
+
+    last_pursuit_x_ *= alpha_pursuit_;
+    last_pursuit_x_ += (1.0-alpha_pursuit_)*path[path_index];
+
+    double track_error = last_pursuit_x_ - 0.5;
+
+    cs_debug::draw_background(debug_plot_, segmentation_);
+
+    // cs_debug::draw_point(debug_plot_, last_pursuit_x_, pursuit_dist_);
+
+    for (uint i = 0; i < num_stripes; i++)
     {
-      for (int y = segmentedImage.height() - 1 - offsets[i]; y >= 0; y--)
+      double pos = ((double)i+0.5)/num_stripes * dist[max_dist_index];
+      
+      if (debug_hist_ == 1)
       {
-        for (int x = i*stripe_width; x < (i+1)*stripe_width; x++)
-        {
-          density[i] += segmentedImage(x,y)/255.0/stripe_width/segmentedImage.width();
-          total_density += density[i];
-        }
+        // bottom
+        cs_debug::draw_point(debug_plot_, ((double)i+0.5)/num_stripes, dist[i]);
+      }
+      else if (debug_hist_ == 2)
+      {
+        // left
+        cs_debug::draw_point(debug_plot_, dist_left[i], dist[max_dist_index] - pos);
+      }
+      else if (debug_hist_ == 3)
+      {
+        // right
+        cs_debug::draw_point(debug_plot_, 1.0 - dist_right[i], dist[max_dist_index] - pos);
+      }
+      else if(debug_hist_ == 4)
+      {
+        cs_debug::draw_point(debug_plot_, path[i], pos, i == path_index ? 255 : 110);
       }
     }
 
-    total_density /= segmentedImage.width()*segmentedImage.height();
-
-    double angle = 2.0*PI*((avoid_walls_*density[0]+density[1])-(density[3]+avoid_walls_*density[4]))/total_density;
-
-    last_angle_ *= alpha_angle_;
-    last_angle_ += angle*(1.0-alpha_angle_);
-
-    double angle_full = steer_linear_ * last_angle_ +
-      steer_quadratic_ * last_angle_*std::abs(last_angle_);
-
-    double angle_clamped = clamp(
-      angle_full,
+    double angle = clamp(
+      controller_steer_.feed(track_error),
       steer_max_
     );
 
-    double throttle = speed_*(total_density);
+    double total_distances = 0;
 
-    if (std::abs(angle_full) > 1.5*steer_max_)
+    for (auto d : dist)
     {
-      throttle = 0.0;
+      total_distances += d;
     }
 
+    last_throttle_ *= alpha_throttle_;
+    last_throttle_ += (1.0 - alpha_throttle_)*speed_*total_distances + controller_brake_.feed(std::abs(track_error));
 
-    // obstacle in the center
-    if (
-      density[2] < density[1] && 
-      density[2] < density[3] &&
-      std::abs(angle_clamped) < steer_max_/0.5
-    )
-    {
-      angle_clamped = std::copysign(steer_max_/0.5, angle_clamped);
-    }
+    double throttle = std::max(
+      last_throttle_, 
+      0.0
+    );
 
-    last_throttle_ *= 0.9;
-    last_throttle_ += (0.1)*throttle;
-
-    // pass the velocity command to the robot
-    // the second value should be zero since the robot cannot
-    // move sideways while looking forward
     return mira::Velocity2(
-      std::max(last_throttle_, 0.0f),
+      throttle,
       0,
-      angle_clamped
+      angle
     );
   }
 
@@ -350,23 +447,35 @@ public:
     r.property( "alpha_hist", alpha_hist_, "", 0.6, PropertyHints::limits(0, 1) );
     r.property( "alpha_segment", alpha_segment_, "", 0.2, PropertyHints::limits(0, 1) );
     
-    r.property( "max_stripe_fill", max_stripe_fill_, "", 0.6, PropertyHints::limits(0.0, 1.0) );
+    r.property( "max_stripe_fill", max_stripe_fill_, "", 0.05, PropertyHints::limits(0.0, 1.0) );
 
-    r.property( "speed", speed_, "", 15);
+    r.property( "speed", speed_, "", 1.2);
 
-
-
-    r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
-    r.property( "steer_linear", steer_linear_, "", 0.35);
-    r.property( "steer_quadratic", steer_quadratic_, "", 0.025);
-    r.property( "steer_max", steer_max_, "", 1.0);
-    r.property( "avoid_walls_", avoid_walls_, "", 0.3);
+    r.property( "alpha_throttle", alpha_throttle_, "", 0.5, PropertyHints::limits(0, 1) );
     
+    r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
+    
+    r.property( "lookahead", pursuit_dist_, "", 0.5, PropertyHints::limits(0.0, 1.0));
+    r.property( "alpha_pursuit", alpha_pursuit_, "", 0.1);
+    r.property( "steer_max", steer_max_, "", 1.8);
+
+    r.property( "debug_hist", debug_hist_, "", 4);
+
+    r.property( "P steer", controller_steer_.p_, "", 1.1);
+    r.property( "I steer", controller_steer_.i_, "", 0.8);
+    r.property( "D steer", controller_steer_.d_, "", -0.2);
 
 
+    r.property( "P brake", controller_brake_.p_, "", 0.4);
+    r.property( "I brake", controller_brake_.i_, "", 0.8);
+    r.property( "D brake", controller_brake_.d_, "", 0.5);
+    
     //if (last_hist_ != NULL) delete last_hist_;
     last_hist_ = NULL;
-    last_segmentation_ = NULL;
+
+    controller_steer_.reset_state();
+    controller_brake_.reset_state();
+
     // add your own member variables here
     // use
     // r.property( "ReadableNameOfVariable", <variable>, "Description", <default value>, <property hints> );

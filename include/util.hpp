@@ -8,9 +8,11 @@
 
 #define PI 3.14
 
+typedef unsigned int uint;
+
 namespace util
 {
   float clamp(float val, float minmax);
-} // namespace ak_util
+}; // namespace ak_util
 
 #endif // ADRIAN_UTIL_HPP
