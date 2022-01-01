@@ -83,7 +83,8 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
 
   cs_control::PIDController controller_steer_;
   cs_control::PIDController controller_throttle_;
-  cs_control::PIDController controller_brake_;
+
+  double weight_distances_;
 
   bool debug_;  
 
@@ -109,7 +110,7 @@ public:
     last_pursuit_x_ = 0.5;
 
     controller_steer_.reset_state();
-    controller_brake_.reset_state();
+    controller_throttle_.reset_state();
   }
 
   /**
@@ -427,13 +428,15 @@ public:
     }
 
     double throttle = std::max(
-      controller_throttle_.feed(1/total_distances) + 
-      controller_brake_.feed(std::abs(track_error)), 
+      controller_throttle_.feed(
+        (1.0 - weight_distances_) * std::abs(track_error) -
+        weight_distances_ * total_distances
+      ),
       0.0
     );
 
     return mira::Velocity2(
-      std::min(throttle * std::max(PI/2.5 - std::abs(track_error), 0.0), max_speed_),
+      std::min(throttle, 0.0), max_speed_),
       0,
       angle
     );
@@ -475,20 +478,13 @@ public:
     r.property( "I steer", controller_steer_.i_, "", 0.0);
     r.property( "D steer", controller_steer_.d_, "", 0.4);
 
+    r.property( "weight distances", weight_distances_, "", 0.15);
 
-    r.property( "P brake", controller_brake_.p_, "", 1.0);
-    r.property( "I brake", controller_brake_.i_, "", 0.0);
-    r.property( "D brake", controller_brake_.d_, "", 1.5);
-
-    r.property( "P throttle", controller_throttle_.p_, "", -10);
+    r.property( "P throttle", controller_throttle_.p_, "", 10);
     r.property( "I throttle", controller_throttle_.i_, "", 0);
-    r.property( "D throttle", controller_throttle_.d_, "", -6.0);
+    r.property( "D throttle", controller_throttle_.d_, "", 10);
     
-    //if (last_hist_ != NULL) delete last_hist_;
-    last_hist_ = NULL;
-
     controller_steer_.reset_state();
-    controller_brake_.reset_state();
     controller_throttle_.reset_state();
 
     // add your own member variables here
