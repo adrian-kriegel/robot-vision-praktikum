@@ -4,6 +4,7 @@
 
 #include <vector>
 #include <functional>
+#include <cmath>
 
 #include "util.hpp"
 
@@ -84,13 +85,46 @@ namespace cs_control
 
       last_error_ = e;
 
-      if (e < 0.3)
+      if (std::abs(e) < 0.3)
       {
         int_ = 0;
       }
 
       return u;
     }
+  };
+
+  template<typename T>
+  class LowPass
+  {
+  private:
+    T last_val_;
+    bool init_;
+  public:
+
+    double alpha_;
+
+    void reset_state()
+    {
+      init_ = false;
+    }
+
+    T feed(T val)
+    {
+      if (!init_)
+      {
+        last_val_ = val;
+        init_ = true;
+      }
+      else 
+      {
+        last_val_ *= alpha_;
+        last_val_ += (1-alpha_)*val;
+      }
+
+      return last_val_;
+    }
+
   };
 
 }; // namespace control

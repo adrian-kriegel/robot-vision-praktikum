@@ -69,8 +69,7 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
 
   float avoid_walls_;
 
-  double last_throttle_;
-  double alpha_throttle_;
+
 
   double last_pursuit_x_;
   double alpha_pursuit_;
@@ -79,14 +78,17 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
 
   double max_speed_;
 
+  double min_dist_;
+
   uint debug_hist_;
 
   cs_control::PIDController controller_steer_;
-  cs_control::PIDController controller_throttle_;
+  cs_control::PIDController controller_throttle_error_;
+  cs_control::PIDController controller_throttle_dist_;
+  
+  cs_control::LowPass<double> low_pass_throttle_;
 
-  double weight_distances_;
-
-  bool debug_;  
+  bool debug_;
 
 public:
 
@@ -105,12 +107,14 @@ public:
     debug_plot_ = NULL;
 
     last_angle_ = 0.0;
-    last_throttle_ = 0.0;
 
     last_pursuit_x_ = 0.5;
 
     controller_steer_.reset_state();
-    controller_throttle_.reset_state();
+    controller_throttle_error_.reset_state();
+    controller_throttle_dist_.reset_state();
+
+    low_pass_throttle_.reset_state();
   }
 
   /**
@@ -354,7 +358,7 @@ public:
       max_stripe_fill_,
       // only build the histogram from the bottom to the max dist
       // using padding_left as image is flipped
-      path_end
+      1.0 - path_end
     );
 
     // create a distance histogram from right to left (image flipped and inverted)
@@ -365,7 +369,7 @@ public:
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
-      path_end
+      1.0 - path_end
     );
 
     std::vector<double> path(num_stripes);
@@ -427,16 +431,18 @@ public:
       total_distances += d;
     }
 
-    double throttle = std::max(
-      controller_throttle_.feed(
-        (1.0 - weight_distances_) * std::abs(track_error) -
-        weight_distances_ * total_distances
-      ),
-      0.0
+    double throttle = low_pass_throttle_.feed(
+      max_speed_ +
+      controller_throttle_dist_.feed(
+        std::min(total_distances/num_stripes, min_dist_) - min_dist_
+      ) +
+      controller_throttle_error_.feed(
+        std::abs(track_error)
+      )
     );
 
     return mira::Velocity2(
-      std::min(throttle, 0.0), max_speed_),
+      std::max(std::min(throttle, max_speed_), 0.0),
       0,
       angle
     );
@@ -460,32 +466,39 @@ public:
     
     r.property( "max_stripe_fill", max_stripe_fill_, "", 0.05, PropertyHints::limits(0.0, 1.0) );
 
-    r.property( "speed", speed_, "", 1.4);
+    // r.property( "speed", speed_, "", 1.4);
     r.property("max_speed", max_speed_, "",2.2);
 
-    r.property( "alpha_throttle", alpha_throttle_, "", 0.0, PropertyHints::limits(0, 1) );
     
-    r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
+    // r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
     
-    r.property( "lookahead", pursuit_dist_, "", 0.6, PropertyHints::limits(0.0, 1.0));
     r.property( "alpha_pursuit", alpha_pursuit_, "", 0.0);
     r.property( "steer_max", steer_max_, "", 3.0);
 
     r.property( "debug_hist", debug_hist_, "", 4);
     r.property( "debug", debug_, "", false);
-
+    
+    r.property( "lookahead", pursuit_dist_, "", 0.4, PropertyHints::limits(0.0, 1.0));
+    r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.2, PropertyHints::limits(0, 1) );
+    
     r.property( "P steer", controller_steer_.p_, "", 1.0);
-    r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.4);
+    r.property( "I steer", controller_steer_.i_, "", 0.2);
+    r.property( "D steer", controller_steer_.d_, "", 0.6);
 
-    r.property( "weight distances", weight_distances_, "", 0.15);
+    // r.property( "weight distances", weight_distances_, "", 1.6);
+    r.property( "min distance", min_dist_, "", 0.3);
 
-    r.property( "P throttle", controller_throttle_.p_, "", 10);
-    r.property( "I throttle", controller_throttle_.i_, "", 0);
-    r.property( "D throttle", controller_throttle_.d_, "", 10);
+    r.property( "P thr. error", controller_throttle_error_.p_, "", 0);
+    r.property( "I thr. error", controller_throttle_error_.i_, "", 0.1);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 4);
+
+    r.property( "P thr. dist", controller_throttle_dist_.p_, "", 6);
+    r.property( "I thr. dist", controller_throttle_dist_.i_, "", 0);
+    r.property( "D thr. dist", controller_throttle_dist_.d_, "", 8);
     
     controller_steer_.reset_state();
-    controller_throttle_.reset_state();
+    controller_throttle_error_.reset_state();
+    controller_throttle_dist_.reset_state();
 
     // add your own member variables here
     // use
