@@ -337,8 +337,8 @@ public:
       segmentation_->height(),
       max_stripe_fill_,
       0,0,
-      // ignore the upper quarter of the image
-      0.25, 0
+      // ignore the upper half of the image as distances cannot be greater than that anyway
+      0.5, 0
     );
 
     double path_end = std::max(dist[max_dist_index], 0.1);

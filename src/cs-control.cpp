@@ -49,7 +49,7 @@ double cs_control::calc_column_dist(
     }
   }
 
-  return 1.0;
+  return 1.0 - padding_top - padding_bottom;
 }
 
 uint cs_control::hist_calc_distances(
