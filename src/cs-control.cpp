@@ -3,6 +3,55 @@
 
 #include <algorithm>
 
+double cs_control::calc_column_dist(
+  std::function<uint(uint, uint)> img,
+  uint width,
+  uint height,
+  double padding_top,
+  double padding_bottom,
+  double min_fill,
+  uint col_width,
+  uint x_start,
+  uint x_end
+)
+{
+  unsigned int y_start = height - 1 - padding_bottom*height;
+
+  // number of "obstacle" pixels counted
+  double obst_count = 0;
+
+  // iterate image bottom to top
+  for (
+    uint y = y_start;
+    y >= padding_top*height;
+    y--
+  )
+  {
+    // iterate column left to right
+    for (
+      uint x = x_start;
+      x < x_end;
+      x++
+    )
+    {
+      if(img(x,y) < 255)
+      {
+        obst_count++;
+      }
+    }
+
+    if(
+      obst_count/(col_width*height) >= min_fill
+    )
+    {
+      // current "height" in the image from bottom to y
+      return (double)(1.0-(double)y/height);
+    }
+  }
+
+  return 1.0;
+}
+
 uint cs_control::hist_calc_distances(
   std::vector<double>& hist,
   std::function<uint(uint, uint)> img,
@@ -17,56 +66,25 @@ uint cs_control::hist_calc_distances(
 {
   unsigned int col_width = (width - (padding_left+padding_right)*width)/ hist.size();
 
-  unsigned int y_start = height - 1 - padding_bottom*height;
-
   double max_dist = 0;
   double max_dist_index = 0;
   
   // iterate through the histogram
   for (uint i = 0; i < hist.size(); i++)
   { 
-    hist.at(i) = 1.0;
-
-    // number of "obstacle" pixels counted
-    double obst_count = 0;
-
-    // iterate image bottom to top
-    for (
-      uint y = y_start;
-      y >= padding_top*height;
-      y--
-    )
+    hist.at(i) = cs_control::calc_column_dist(
+      img,
+      width, height, padding_top, padding_bottom,
+      min_fill,
+      col_width, 
+      i*col_width + padding_left*width, // x start
+      (i+1)*col_width + padding_left*width // x end
+    );
+    
+    if (hist.at(i) > max_dist)
     {
-      // iterate column left to right
-      for (
-        uint x = i*col_width + padding_left*width;
-        x < (i+1)*col_width + padding_left*width;
-        x++
-      )
-      {
-        if(img(x,y) < 255)
-        {
-          obst_count++;
-        }
-      }
-
-      if(
-        obst_count/(col_width*height) >= min_fill
-      )
-      {
-        // current "height" in the image from bottom to y
-        double dist = (double)(1.0-(double)y/height);
-
-        hist.at(i) = dist;
-
-        if (dist > max_dist)
-        {
-          max_dist = dist;
-          max_dist_index = i;
-        }
-
-        break;
-      }
+      max_dist = hist.at(i);
+      max_dist_index = i;
     }
   }
   

@@ -9,6 +9,18 @@
 
 namespace cs_control
 {
+  double calc_column_dist(
+    std::function<uint(uint, uint)> img,
+    uint width,
+    uint height,
+    double padding_top,
+    double padding_bottom,
+    double min_fill,
+    uint col_width,
+    uint x_start,
+    uint x_end
+  );
+
   /**
   * @brief populates distance histogram
   * @param[out] hist histogram 
@@ -72,7 +84,7 @@ namespace cs_control
 
       last_error_ = e;
 
-      if (e < 0.1)
+      if (e < 0.3)
       {
         int_ = 0;
       }

@@ -77,11 +77,15 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
 
   double brake_;
 
+  double max_speed_;
+
   uint debug_hist_;
 
   cs_control::PIDController controller_steer_;
+  cs_control::PIDController controller_throttle_;
   cs_control::PIDController controller_brake_;
-  
+
+  bool debug_;  
 
 public:
 
@@ -159,7 +163,7 @@ public:
       }
     }
 
-    return debugPlot();
+    return debug_ ? debugPlot() : *segmentation_;
   }
 
   GrayImage& debugPlot()
@@ -314,7 +318,7 @@ public:
 
     LOCK_PLOT;
     // split the image into vertical columns
-    uint8 num_stripes = 5;
+    uint8 num_stripes = 9;
 
     // distance histogram
     std::vector<double> dist(num_stripes);
@@ -332,11 +336,13 @@ public:
       segmentation_->width(),
       segmentation_->height(),
       max_stripe_fill_,
-      // ignore the walls left and right
-      wall_width, wall_width,
+      0,0,
       // ignore the upper quarter of the image
       0.25, 0
     );
+
+    double path_end = std::max(dist[max_dist_index], 0.1);
+
     // create a distance histogram from left to right (image flipped and inverted)
     uint8 max_dist_index_left = cs_control::hist_calc_distances(
       dist_right,
@@ -346,7 +352,8 @@ public:
       segmentation_->width(),
       max_stripe_fill_,
       // only build the histogram from the bottom to the max dist
-      dist[max_dist_index] // using padding_left as image is flipped
+      // using padding_left as image is flipped
+      path_end
     );
 
     // create a distance histogram from right to left (image flipped and inverted)
@@ -357,7 +364,7 @@ public:
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
-      dist[max_dist_index]
+      path_end
     );
 
     std::vector<double> path(num_stripes);
@@ -373,35 +380,38 @@ public:
     last_pursuit_x_ *= alpha_pursuit_;
     last_pursuit_x_ += (1.0-alpha_pursuit_)*path[path_index];
 
-    double track_error = last_pursuit_x_ - 0.5;
+    double track_error = std::atan2(last_pursuit_x_ - 0.5, (double)path_index/(path.size() - 1)*path_end);
 
-    cs_debug::draw_background(debug_plot_, segmentation_);
-
-    // cs_debug::draw_point(debug_plot_, last_pursuit_x_, pursuit_dist_);
-
-    for (uint i = 0; i < num_stripes; i++)
+    if(debug_)
     {
-      double pos = ((double)i+0.5)/num_stripes * dist[max_dist_index];
-      
-      if (debug_hist_ == 1)
+      cs_debug::draw_background(debug_plot_, segmentation_);
+
+      for (uint i = 0; i < num_stripes; i++)
       {
-        // bottom
-        cs_debug::draw_point(debug_plot_, ((double)i+0.5)/num_stripes, dist[i]);
+        double pos = ((double)i+0.5)/num_stripes * path_end;
+        
+        if (debug_hist_ == 1)
+        {
+          // bottom
+          cs_debug::draw_point(debug_plot_, ((double)i+0.5)/num_stripes, dist[i]);
+        }
+        else if (debug_hist_ == 2)
+        {
+          // left
+          cs_debug::draw_point(debug_plot_, dist_left[i], path_end - pos);
+        }
+        else if (debug_hist_ == 3)
+        {
+          // right
+          cs_debug::draw_point(debug_plot_, 1.0 - dist_right[i], path_end - pos);
+        }
+        else if(debug_hist_ == 4)
+        {
+          cs_debug::draw_point(debug_plot_, path[i], pos, path_index == i ? 255 : 100);
+        }
       }
-      else if (debug_hist_ == 2)
-      {
-        // left
-        cs_debug::draw_point(debug_plot_, dist_left[i], dist[max_dist_index] - pos);
-      }
-      else if (debug_hist_ == 3)
-      {
-        // right
-        cs_debug::draw_point(debug_plot_, 1.0 - dist_right[i], dist[max_dist_index] - pos);
-      }
-      else if(debug_hist_ == 4)
-      {
-        cs_debug::draw_point(debug_plot_, path[i], pos, i == path_index ? 255 : 110);
-      }
+
+      //cs_debug::draw_point(debug_plot_, last_pursuit_x_, pursuit_dist_);
     }
 
     double angle = clamp(
@@ -416,16 +426,14 @@ public:
       total_distances += d;
     }
 
-    last_throttle_ *= alpha_throttle_;
-    last_throttle_ += (1.0 - alpha_throttle_)*speed_*total_distances + controller_brake_.feed(std::abs(track_error));
-
     double throttle = std::max(
-      last_throttle_, 
+      controller_throttle_.feed(1/total_distances) + 
+      controller_brake_.feed(std::abs(track_error)), 
       0.0
     );
 
     return mira::Velocity2(
-      throttle,
+      std::min(throttle * std::max(PI/2.5 - std::abs(track_error), 0.0), max_speed_),
       0,
       angle
     );
@@ -444,37 +452,44 @@ public:
     r.property( "mask_height", mask_height_, "", 20, PropertyHints::limits(0, 100) );
     r.property( "mask_width_top", mask_width_top_, "", 30, PropertyHints::limits(0, 140) );
     r.property( "mask_width_bottom", mask_width_bottom_, "", 90, PropertyHints::limits(0, 200) );
-    r.property( "alpha_hist", alpha_hist_, "", 0.6, PropertyHints::limits(0, 1) );
+    r.property( "alpha_hist", alpha_hist_, "", 0.98, PropertyHints::limits(0, 1) );
     r.property( "alpha_segment", alpha_segment_, "", 0.2, PropertyHints::limits(0, 1) );
     
     r.property( "max_stripe_fill", max_stripe_fill_, "", 0.05, PropertyHints::limits(0.0, 1.0) );
 
-    r.property( "speed", speed_, "", 1.2);
+    r.property( "speed", speed_, "", 1.4);
+    r.property("max_speed", max_speed_, "",2.2);
 
-    r.property( "alpha_throttle", alpha_throttle_, "", 0.5, PropertyHints::limits(0, 1) );
+    r.property( "alpha_throttle", alpha_throttle_, "", 0.0, PropertyHints::limits(0, 1) );
     
     r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
     
-    r.property( "lookahead", pursuit_dist_, "", 0.5, PropertyHints::limits(0.0, 1.0));
-    r.property( "alpha_pursuit", alpha_pursuit_, "", 0.1);
-    r.property( "steer_max", steer_max_, "", 1.8);
+    r.property( "lookahead", pursuit_dist_, "", 0.6, PropertyHints::limits(0.0, 1.0));
+    r.property( "alpha_pursuit", alpha_pursuit_, "", 0.0);
+    r.property( "steer_max", steer_max_, "", 3.0);
 
     r.property( "debug_hist", debug_hist_, "", 4);
+    r.property( "debug", debug_, "", false);
 
-    r.property( "P steer", controller_steer_.p_, "", 1.1);
-    r.property( "I steer", controller_steer_.i_, "", 0.8);
-    r.property( "D steer", controller_steer_.d_, "", -0.2);
+    r.property( "P steer", controller_steer_.p_, "", 1.0);
+    r.property( "I steer", controller_steer_.i_, "", 0.0);
+    r.property( "D steer", controller_steer_.d_, "", 0.4);
 
 
-    r.property( "P brake", controller_brake_.p_, "", 0.4);
-    r.property( "I brake", controller_brake_.i_, "", 0.8);
-    r.property( "D brake", controller_brake_.d_, "", 0.5);
+    r.property( "P brake", controller_brake_.p_, "", 1.0);
+    r.property( "I brake", controller_brake_.i_, "", 0.0);
+    r.property( "D brake", controller_brake_.d_, "", 1.5);
+
+    r.property( "P throttle", controller_throttle_.p_, "", -10);
+    r.property( "I throttle", controller_throttle_.i_, "", 0);
+    r.property( "D throttle", controller_throttle_.d_, "", -6.0);
     
     //if (last_hist_ != NULL) delete last_hist_;
     last_hist_ = NULL;
 
     controller_steer_.reset_state();
     controller_brake_.reset_state();
+    controller_throttle_.reset_state();
 
     // add your own member variables here
     // use
