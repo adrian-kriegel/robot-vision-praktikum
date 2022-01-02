@@ -61,17 +61,21 @@ uint cs_control::hist_calc_distances(
   double padding_left,
   double padding_right,
   double padding_top,
-  double padding_bottom
+  double padding_bottom,
+  std::vector<bool>* indexes
 )
 {
   unsigned int col_width = (width - (padding_left+padding_right)*width)/ hist.size();
 
   double max_dist = 0;
   double max_dist_index = 0;
-  
+
   // iterate through the histogram
   for (uint i = 0; i < hist.size(); i++)
   { 
+    if (indexes != nullptr && !(indexes->at(i)))
+      continue;
+
     hist.at(i) = cs_control::calc_column_dist(
       img,
       width, height, padding_top, padding_bottom,

@@ -5,6 +5,8 @@
 #include <vector>
 #include <functional>
 #include <cmath>
+#include <limits>
+#include <chrono>
 
 #include "util.hpp"
 
@@ -41,7 +43,8 @@ namespace cs_control
     double padding_left=0,
     double padding_right=0,
     double padding_top=0,
-    double padding_bottom=0
+    double padding_bottom=0,
+    std::vector<bool>* indexes = nullptr
   );
 
   /**
@@ -60,28 +63,54 @@ namespace cs_control
     std::vector<double>& hist_right
   );
 
+  #define PID_BASE_TIME 0.0024944
 
   class PIDController
   {
   private:
     double int_, last_error_;
+    bool init_;
 
+    std::chrono::time_point<std::chrono::system_clock> last_time_;
+    
   public:
     double p_,i_,d_;
+    double max_;
 
     PIDController(){ reset_state(); }
+    PIDController(double max) { reset_state(); max_ = max; }
 
     void reset_state()
     {
       int_ = 0;
       last_error_ = 0;
+      init_ = false;
+      max_ = std::numeric_limits<double>::infinity();
+    }
+
+    double dt()
+    {
+      std::chrono::duration<double> diff = std::chrono::system_clock::now() - last_time_;
+      return diff.count();
     }
 
     double feed(double e)
     {
-      int_ += e;
+      double d = 0;
 
-      double u = -(p_ * e + i_ * int_ + d_ * (e - last_error_)); 
+      if (!init_)
+      {
+        last_time_ = std::chrono::system_clock::now();
+        init_ = true;
+      }
+      else 
+      {
+        d = (e - last_error_)/(dt() / PID_BASE_TIME);
+      }
+
+      int_ += e * (dt() / PID_BASE_TIME);
+
+      double u = -(p_ * e + i_ * int_ + d_ * d); 
 
       last_error_ = e;
 
@@ -90,7 +119,7 @@ namespace cs_control
         int_ = 0;
       }
 
-      return u;
+      return std::min(u, max_);
     }
   };
 
