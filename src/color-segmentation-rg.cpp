@@ -1,5 +1,8 @@
 
-#include <mutex>
+#include <chrono>
+#include <functional>
+#include <thread>
+#include <future>
 
 #include <ColorSegmentationTemplate.h>
 #include <ReferenceCS.h>
@@ -91,6 +94,9 @@ class ColorSegmentationRG_58941 : public ColorSegmentationTemplateRG {
   double weight_offset_;
 
   double turning_speed_;
+
+  bool drive_command_success_;
+  mira::Velocity2 drive_command_;
 
 public:
 
@@ -335,7 +341,7 @@ public:
    * @param[in] segmentedImage Image with the ground/obstacle segmentation
    * @return drive command as velocity
    */
-  mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
+  mira::Velocity2 getDriveCommand2()
   {
     if (segmentation_ == NULL)
     {
@@ -350,7 +356,7 @@ public:
     std::vector<double> dist_left(num_stripes);
     std::vector<double> dist_right(num_stripes);
 
-    const GrayImage* img = debug_ ? segmentation_ : &segmentedImage;
+    const GrayImage* img = segmentation_;
 
     uint8 max_dist_index = cs_control::hist_calc_distances(
       dist,
@@ -496,6 +502,34 @@ public:
     );
   }
 
+  mira::Velocity2 getDriveCommand(GrayImage const& segmentedImage)
+  {
+    drive_command_success_ = false;
+
+    {
+      std::thread thread(
+        [this]
+        { 
+          try 
+          {
+            drive_command_ = getDriveCommand2();
+            drive_command_success_ = true;
+          }
+          catch(std::exception e)
+          {
+            // std::cerr << e.what() << std::endl;
+          }
+        }
+      );
+
+      thread.detach();
+    }
+    
+    while (!drive_command_success_ && controller_steer_.dt() < 0.06) {}
+
+    return drive_command_;
+  }
+
   /**
    * @brief You can use the reflect method to add members of your class
    * that are accessible in the visualization.
@@ -529,16 +563,16 @@ public:
     
     r.property( "steer_max", steer_max_, "", 0.8);
     r.property( "weight offset", weight_offset_, "", 730);
-    r.property( "P steer", controller_steer_.p_, "", 1.3);
-    r.property( "I steer", controller_steer_.i_, "", 0.0);
+    r.property( "P steer", controller_steer_.p_, "", 1.0);
+    r.property( "I steer", controller_steer_.i_, "", 0.01);
     r.property( "D steer", controller_steer_.d_, "", 0.9);
 
     r.property( "min distance", min_dist_, "", 0.45);
     r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.8, PropertyHints::limits(0, 1) );
     
-    r.property( "P thr. error", controller_throttle_error_.p_, "", 3.0);
+    r.property( "P thr. error", controller_throttle_error_.p_, "", 4.0);
     r.property( "I thr. error", controller_throttle_error_.i_, "", 0.0);
-    r.property( "D thr. error", controller_throttle_error_.d_, "", 7.3);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 6);
 
     r.property( "P thr. offset", controller_throttle_offset_.p_, "", 4000);
     r.property( "I thr. offset", controller_throttle_offset_.i_, "", 0.0);
