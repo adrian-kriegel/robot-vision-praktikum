@@ -65,11 +65,10 @@ uint cs_control::hist_calc_distances(
   std::vector<bool>* indexes
 )
 {
-  unsigned int col_width = (width - (padding_left+padding_right)*width)/ hist.size();
+  unsigned int col_width = width*(1.0 - padding_left - padding_right) / hist.size();
 
   double max_dist = 0;
-  double max_dist_index = 0;
-
+  
   // iterate through the histogram
   for (uint i = 0; i < hist.size(); i++)
   { 
@@ -88,11 +87,64 @@ uint cs_control::hist_calc_distances(
     if (hist.at(i) > max_dist)
     {
       max_dist = hist.at(i);
-      max_dist_index = i;
+    }
+  }
+
+  std::vector<uint> group_sizes(hist.size());
+
+  std::fill(group_sizes.begin(), group_sizes.end(), 0);
+
+  uint max_group_size = 0;
+  uint max_group_start = 0;
+
+  int current_group_start = -1;
+
+  for (uint i = 0; i < hist.size(); i++)
+  {
+    bool is_max_dist = (std::abs(hist.at(i) - max_dist) <= 1.0/height);
+
+    if (current_group_start == -1 && is_max_dist)
+    {
+      current_group_start = i;
+    }
+    
+    if (current_group_start != -1)
+    {
+      if (group_sizes.at(current_group_start) > max_group_size)
+      {
+        max_group_size = group_sizes.at(current_group_start);
+        max_group_start = current_group_start;
+      }
+
+      if (is_max_dist)
+      {
+        group_sizes.at(current_group_start)++;
+      }
+      else
+      {
+        current_group_start = -1;
+      }
+
     }
   }
   
-  return max_dist_index;
+  // if the group starts to the left or ends on the right, return the outermost index
+  if (
+    max_group_start == 0
+  )
+  {
+    return 0;
+  }
+
+  if (
+    max_group_start + group_sizes[max_group_start] == hist.size() - 1
+  )
+  {
+    return hist.size() - 1;
+  }
+
+  // else return the center of the largest group
+  return max_group_start + group_sizes[max_group_start]/2;
 }
 
 void cs_control::calc_pursuit_point(

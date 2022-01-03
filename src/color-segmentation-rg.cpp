@@ -326,7 +326,7 @@ public:
     }
 
     // split the image into vertical columns
-    uint8 num_stripes = 17;
+    uint8 num_stripes = 9;
 
     // distance histogram
     std::vector<double> dist(num_stripes);
@@ -335,7 +335,7 @@ public:
 
     uint8 max_dist_index = cs_control::hist_calc_distances(
       dist,
-      [img=*segmentation_](uint16 x, uint16 y) { return img(x,y); },
+      [segmentation_](uint16 x, uint16 y) { return (*segmentation_)(x,y); },
       segmentation_->width(),
       segmentation_->height(),
       max_stripe_fill_,
@@ -362,7 +362,7 @@ public:
     cs_control::hist_calc_distances(
       dist_right,
       // flip and invert image
-      [img=*segmentation_](uint16 x, uint16 y) { return 255-img(y,x); },
+      [segmentation_](uint16 x, uint16 y) { return 255-(*segmentation_)(y,x); },
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
@@ -377,7 +377,7 @@ public:
     cs_control::hist_calc_distances(
       dist_left,
       // flip and invert image
-      [img=*segmentation_](uint16 x, uint16 y) { return 255-img(img.width() - y - 1,x); },
+      [segmentation_](uint16 x, uint16 y) { return 255-(*segmentation_)((*segmentation_).width() - y - 1,x); },
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
@@ -447,7 +447,7 @@ public:
     double throttle =
       max_speed_ +
       controller_throttle_dist_.feed(
-        std::min(total_distances/num_stripes, min_dist_) - min_dist_
+        std::min(dist.at(dist.size() / 2), min_dist_) - min_dist_
       ) +
       controller_throttle_error_.feed(
         std::abs(track_error)
@@ -464,6 +464,11 @@ public:
     }
 
     auto end = std::chrono::system_clock::now();
+
+    if (controller_steer_.dt() > PID_BASE_TIME*2)
+    {
+      throttle = 0;
+    }
 
     return mira::Velocity2(
       std::max(std::min(low_pass_throttle_.feed(throttle), max_speed_), 0.0),
@@ -509,20 +514,20 @@ public:
     r.property( "I steer", controller_steer_.i_, "", 0.0);
     r.property( "D steer", controller_steer_.d_, "", 0.9);
 
-    r.property( "min distance", min_dist_, "", 0.3);
+    r.property( "min distance", min_dist_, "", 0.45);
     r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.8, PropertyHints::limits(0, 1) );
     
-    r.property( "P thr. error", controller_throttle_error_.p_, "", 2.0);
+    r.property( "P thr. error", controller_throttle_error_.p_, "", 3.0);
     r.property( "I thr. error", controller_throttle_error_.i_, "", 0.0);
-    r.property( "D thr. error", controller_throttle_error_.d_, "", 3.3);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 7.3);
 
     r.property( "P thr. offset", controller_throttle_offset_.p_, "", 4000);
     r.property( "I thr. offset", controller_throttle_offset_.i_, "", 0.0);
     r.property( "D thr. offset", controller_throttle_offset_.d_, "", 14000);
 
-    r.property( "P thr. dist", controller_throttle_dist_.p_, "", -28);
+    r.property( "P thr. dist", controller_throttle_dist_.p_, "", -12);
     r.property( "I thr. dist", controller_throttle_dist_.i_, "", 0);
-    r.property( "D thr. dist", controller_throttle_dist_.d_, "", -300);
+    r.property( "D thr. dist", controller_throttle_dist_.d_, "", -1200);
     
     // add your own member variables here
     // use

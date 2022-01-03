@@ -90,6 +90,9 @@ namespace cs_control
 
     double dt()
     {
+      if (!init_)
+        return 0;
+
       std::chrono::duration<double> diff = std::chrono::system_clock::now() - last_time_;
       return diff.count();
     }
@@ -100,15 +103,13 @@ namespace cs_control
 
       if (!init_)
       {
-        last_time_ = std::chrono::system_clock::now();
         init_ = true;
       }
       else 
       {
         d = (e - last_error_)/(dt() / PID_BASE_TIME);
+        int_ += e * (dt() / PID_BASE_TIME);
       }
-
-      int_ += e * (dt() / PID_BASE_TIME);
 
       double u = -(p_ * e + i_ * int_ + d_ * d); 
 
@@ -118,6 +119,8 @@ namespace cs_control
       {
         int_ = 0;
       }
+      
+      last_time_ = std::chrono::system_clock::now();
 
       return std::min(u, max_);
     }
