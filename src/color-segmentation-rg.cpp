@@ -26,15 +26,15 @@ using namespace util;
  * @brief Example implementation for steering the robot on the basis of
  * ground color segmentation.
  */
-class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
+class ColorSegmentationRG_58941 : public ColorSegmentationTemplateRG {
 
   // TODO: Add you personal and implementation details here
-  MIRA_META_OBJECT( ClassName_StudentNumber,
-      ("StudentNumber","StudentNumber")
-      ("Course","Course")
-      ("Name","Name")
-      ("FirstName","FirstName")
-      ("Description","Description"));
+  MIRA_META_OBJECT( ColorSegmentationRG_58941,
+      ("StudentNumber","58941")
+      ("Course","RV")
+      ("Name","Kriegel")
+      ("FirstName","Adrian")
+      ("Description","RG"));
 
   
 
@@ -94,7 +94,7 @@ class ClassName_StudentNumber : public ColorSegmentationTemplateRG {
 
 public:
 
-  ClassName_StudentNumber()
+  ColorSegmentationRG_58941()
   : controller_throttle_error_(0),
     controller_throttle_offset_(0),
     controller_throttle_dist_(0)
@@ -158,9 +158,11 @@ public:
     double bin_size = 1.01 / mBins;
 
     // process every single pixel of the input image to generate the segmented image
-    for (int y=0; y < inputImage.height(); ++y) {
+    for (int y=0; y < inputImage.height(); y++) 
+    {
       // loop along y
-      for (int x=0; x < inputImage.width(); ++x) {
+      for (int x=0; x < inputImage.width(); x++) 
+      {
         // loop along x
 
         // obtain rg values of current pixel
@@ -231,10 +233,25 @@ public:
   {
     // Call the reference implementation
     // Remove or comment the following line to make use of your own implementation!!
-    return CS_RG::BGR_to_RG( srcImage );
+    // return CS_RG::BGR_to_RG( srcImage );
 
     // create new image
     RGImage rgImage( srcImage.width(), srcImage.height() );
+
+    for (uint x = 0; x < rgImage.width(); x++)
+    {
+      for (uint y = 0; y < rgImage.height(); y++)
+      {
+        float r,g,b;
+
+        b = (float)srcImage(x,y)[0]/255;
+        g = (float)srcImage(x,y)[1]/255;
+        r = (float)srcImage(x,y)[2]/255;
+
+        rgImage(x,y)[0] = (double)r /(r+g+b);
+        rgImage(x,y)[1] = (double)g /(r+g+b);
+      }
+    }
 
     // access bgr values of srcImage using: srcImage(x,y)[0], srcImage(x,y)[1] and srcImage(x,y)[2]
     // bgr values are of type uint8 (char)
@@ -333,9 +350,11 @@ public:
     std::vector<double> dist_left(num_stripes);
     std::vector<double> dist_right(num_stripes);
 
+    const GrayImage* img = debug_ ? segmentation_ : &segmentedImage;
+
     uint8 max_dist_index = cs_control::hist_calc_distances(
       dist,
-      [segmentation_](uint16 x, uint16 y) { return (*segmentation_)(x,y); },
+      [img](uint16 x, uint16 y) { return (*img)(x,y); },
       segmentation_->width(),
       segmentation_->height(),
       max_stripe_fill_,
@@ -362,7 +381,7 @@ public:
     cs_control::hist_calc_distances(
       dist_right,
       // flip and invert image
-      [segmentation_](uint16 x, uint16 y) { return 255-(*segmentation_)(y,x); },
+      [img](uint16 x, uint16 y) { return 255-(*img)(y,x); },
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
@@ -377,7 +396,7 @@ public:
     cs_control::hist_calc_distances(
       dist_left,
       // flip and invert image
-      [segmentation_](uint16 x, uint16 y) { return 255-(*segmentation_)((*segmentation_).width() - y - 1,x); },
+      [img](uint16 x, uint16 y) { return 255-(*img)((*img).width() - y - 1,x); },
       segmentation_->height(),
       segmentation_->width(),
       max_stripe_fill_,
@@ -554,6 +573,6 @@ public:
   // float b;
 };
 
-MIRA_CLASS_SERIALIZATION( ClassName_StudentNumber, student::ColorSegmentationTemplateRG );
+MIRA_CLASS_SERIALIZATION( ColorSegmentationRG_58941, student::ColorSegmentationTemplateRG );
 
 ///////////////////////////////////////////////////////////////////////////////
