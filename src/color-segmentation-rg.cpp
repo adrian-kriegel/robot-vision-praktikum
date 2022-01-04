@@ -1,8 +1,5 @@
 
-#include <chrono>
-#include <functional>
-#include <thread>
-#include <future>
+#include <mutex>
 
 #include <ColorSegmentationTemplate.h>
 #include <ReferenceCS.h>
@@ -95,10 +92,7 @@ class ColorSegmentationRG_58941 : public ColorSegmentationTemplateRG {
 
   double turning_speed_;
 
-  bool drive_command_success_;
-  mira::Velocity2 drive_command_;
-
-  // must not be unsigned since the initial value is -1
+  // must not be unsigned as default value is -1
   int max_dist_index_;
 
 public:
@@ -122,8 +116,6 @@ public:
 
     last_angle_ = 0.0;
 
-    max_dist_index_ = -1;
-
     controller_steer_.reset_state();
     controller_throttle_error_.reset_state();
     controller_throttle_offset_.reset_state();
@@ -132,7 +124,7 @@ public:
     low_pass_throttle_.reset_state();
     low_pass_pursuit_.reset_state();
 
-    low_pass_throttle_.feed(0.0);
+    max_dist_index_ = -1;
   }
 
   /**
@@ -348,7 +340,7 @@ public:
    * @param[in] segmentedImage Image with the ground/obstacle segmentation
    * @return drive command as velocity
    */
-  mira::Velocity2 getDriveCommand2()
+  mira::Velocity2 getDriveCommand( GrayImage const& segmentedImage )
   {
     if (segmentation_ == NULL)
     {
@@ -363,7 +355,7 @@ public:
     std::vector<double> dist_left(num_stripes);
     std::vector<double> dist_right(num_stripes);
 
-    const GrayImage* img = segmentation_;
+    const GrayImage* img = debug_ ? segmentation_ : &segmentedImage;
 
     max_dist_index_ = cs_control::hist_calc_distances(
       max_dist_index_,
@@ -393,7 +385,7 @@ public:
 
     // create a distance histogram from left to right (image flipped and inverted)
     cs_control::hist_calc_distances(
-      -1, 
+      -1,
       dist_right,
       // flip and invert image
       [img](uint16 x, uint16 y) { return 255-(*img)(y,x); },
@@ -419,9 +411,7 @@ public:
       segmentation_->width(),
       max_stripe_fill_,
       1.0 - path_end,
-      0,
-      0.3,
-      0,
+      0,0.3,0,
       &path_indexes
     );
 
@@ -486,7 +476,7 @@ public:
     double throttle =
       max_speed_ +
       controller_throttle_dist_.feed(
-        dist.at(dist.size() / 2) - min_dist_
+        std::min(dist.at(dist.size() / 2), min_dist_) - min_dist_
       ) +
       controller_throttle_error_.feed(
         std::abs(track_error)
@@ -497,10 +487,7 @@ public:
     ;
 
     // target point is probably out of sight
-    if (
-      max_dist_index_ <= num_stripes/6 || 
-      max_dist_index_ >= num_stripes-1-num_stripes/6
-    )
+    if (max_dist_index_ == 0 || max_dist_index_ == num_stripes-1)
     {
       throttle = std::min(throttle, turning_speed_);
     }
@@ -517,34 +504,6 @@ public:
       0,
       angle
     );
-  }
-
-  mira::Velocity2 getDriveCommand(GrayImage const& segmentedImage)
-  {
-    drive_command_success_ = false;
-
-    {
-      std::thread thread(
-        [this]
-        { 
-          try 
-          {
-            drive_command_ = getDriveCommand2();
-            drive_command_success_ = true;
-          }
-          catch(std::exception e)
-          {
-            // std::cerr << e.what() << std::endl;
-          }
-        }
-      );
-
-      thread.detach();
-    }
-    
-    while (!drive_command_success_ && controller_steer_.dt() < 2*PID_BASE_TIME) {}
-
-    return drive_command_;
   }
 
   /**
@@ -565,8 +524,8 @@ public:
     r.property( "max_stripe_fill", max_stripe_fill_, "", 0.05, PropertyHints::limits(0.0, 1.0) );
 
     // r.property( "speed", speed_, "", 1.4);
-    r.property("max_speed", max_speed_, "", 2.8);
-    r.property("turning_speed", turning_speed_, "", 1.0);
+    r.property("max_speed", max_speed_, "", 3.0);
+    r.property("turning_speed", turning_speed_, "", 2.0);
 
     
     // r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
@@ -580,22 +539,22 @@ public:
     
     r.property( "steer_max", steer_max_, "", 0.8);
     r.property( "weight offset", weight_offset_, "", 730);
-    r.property( "P steer", controller_steer_.p_, "", 0.9);
+    r.property( "P steer", controller_steer_.p_, "", 1.0);
     r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.2);
+    r.property( "D steer", controller_steer_.d_, "", 0.9);
 
     r.property( "min distance", min_dist_, "", 0.45);
     r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.8, PropertyHints::limits(0, 1) );
     
-    r.property( "P thr. error", controller_throttle_error_.p_, "", 1);
+    r.property( "P thr. error", controller_throttle_error_.p_, "", 3.0);
     r.property( "I thr. error", controller_throttle_error_.i_, "", 0.0);
-    r.property( "D thr. error", controller_throttle_error_.d_, "", 7);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 6);
 
     r.property( "P thr. offset", controller_throttle_offset_.p_, "", 4000);
     r.property( "I thr. offset", controller_throttle_offset_.i_, "", 0.0);
     r.property( "D thr. offset", controller_throttle_offset_.d_, "", 14000);
 
-    r.property( "P thr. dist", controller_throttle_dist_.p_, "", -12);
+    r.property( "P thr. dist", controller_throttle_dist_.p_, "", -5);
     r.property( "I thr. dist", controller_throttle_dist_.i_, "", 0);
     r.property( "D thr. dist", controller_throttle_dist_.d_, "", -2000);
     
