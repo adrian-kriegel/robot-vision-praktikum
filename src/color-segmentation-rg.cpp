@@ -47,6 +47,7 @@ class ColorSegmentationRG_58941 : public ColorSegmentationTemplateRG {
   float alpha_hist_;
 
   Histogram2D* last_hist_;
+  Histogram2D* sky_hist_;
 
   GrayImage* segmentation_;
 
@@ -95,6 +96,8 @@ class ColorSegmentationRG_58941 : public ColorSegmentationTemplateRG {
   // must not be unsigned as default value is -1
   int max_dist_index_;
 
+  double sky_hist_threshold_;
+
 public:
 
   ColorSegmentationRG_58941()
@@ -113,6 +116,7 @@ public:
     last_hist_ = NULL;
     segmentation_ = NULL;
     debug_plot_ = NULL;
+    sky_hist_ = NULL;
 
     last_angle_ = 0.0;
 
@@ -178,6 +182,11 @@ public:
         // this segmentation have to be replaced
         // by a more sophisticated one
         (*segmentation_)(x,y) = mHistogram.at(r,g) > mThreshold ? 255 : 0;
+
+        if (sky_hist_->at(r,g) > sky_hist_threshold_)
+        {
+          (*segmentation_)(x,y) = 128;
+        }
       }
     }
 
@@ -281,6 +290,13 @@ public:
           int nrOfBins,
           float maxImgValue )
   {
+    bool sky_init = sky_hist_ == NULL;
+
+    if (sky_init)
+    {
+      sky_hist_ = new Histogram2D(nrOfBins);
+    }
+
     Histogram2D hist( nrOfBins );
 
     double bin_size = 1.01 / nrOfBins;
@@ -290,21 +306,27 @@ public:
     {
       for (int x=0; x < srcImage.width(); ++x)
       {
+        // obtain b,g,r values of image and compute
+        // the associated bin in the histogram
+        uint8 r,g;
+
+        r = srcImage(x,y)[0]/bin_size;
+        g = srcImage(x,y)[1]/bin_size;
+
         // regard the mask
         if ( mask(x,y) > 0 )
         {
-          // obtain b,g,r values of image and compute
-          // the associated bin in the histogram
-          uint8 r,g;
-
-          r = srcImage(x,y)[0]/bin_size;
-          g = srcImage(x,y)[1]/bin_size;
           // transform b,g,r values to associated bins!
           // To get the number of bins of the histogram (equal for each dimension)
           // you can use mHistogram.bins()
 
           // increase the count for the histogram bin value
           hist.at(r,g) += 1;
+        }
+
+        if (sky_init && mask(x, srcImage.height() - 1 - y) > 0)
+        {
+          sky_hist_->at(r,g) += 1;
         }
       }
     }
@@ -319,6 +341,17 @@ public:
       double sum = cv::sum( cv::InputArray(hist) )(0);
       if ( sum > 0 )
         hist /= sum;
+    }
+
+    if (sky_init)
+    {
+      cv::minMaxIdx( cv::InputArray(*sky_hist_), 0, &maxVal );
+
+      if ( maxVal > 0 ) {
+        double sum = cv::sum( cv::InputArray(*sky_hist_) )(0);
+        if ( sum > 0 )
+          (*sky_hist_) /= sum;
+      }
     }
 
     if (last_hist_ == NULL)
@@ -345,6 +378,28 @@ public:
     if (segmentation_ == NULL)
     {
       return mira::Velocity2(0,0,0);
+    }
+
+    double total_sky = 0;
+    uint width = segmentation_->width();  
+    uint height = segmentation_->height();
+    uint sky_window_height = 10;
+    uint sky_window_width = 30;
+    uint sky_offset = 0;
+    for (uint x = width/2 - sky_window_width / 2; x < width/2 + sky_window_width/2; x++)
+    {
+      for (uint y = height/2 - sky_offset; y < height/2 - sky_offset + sky_window_height; y++)
+      {
+        if ((*segmentation_)(x,y) == 128)
+        {
+          total_sky++;
+        }
+      }
+    }
+
+    if ((double) total_sky / (sky_window_height*sky_window_width) > 0.7)
+    {
+      return mira::Velocity2(100, 0, 0);
     }
 
     // split the image into vertical columns
@@ -524,8 +579,8 @@ public:
     r.property( "max_stripe_fill", max_stripe_fill_, "", 0.05, PropertyHints::limits(0.0, 1.0) );
 
     // r.property( "speed", speed_, "", 1.4);
-    r.property("max_speed", max_speed_, "", 3.0);
-    r.property("turning_speed", turning_speed_, "", 2.0);
+    r.property("max_speed", max_speed_, "", 3);
+    r.property("turning_speed", turning_speed_, "", 2.3);
 
     
     // r.property( "alpha_angle", alpha_angle_, "", 0.1, PropertyHints::limits(0, 1) );
@@ -535,20 +590,20 @@ public:
     r.property( "debug_hist", debug_hist_, "", 4);
     r.property( "debug", debug_, "", false);
     
-    r.property( "lookahead", pursuit_dist_, "", 0.5, PropertyHints::limits(0.0, 1.0));
+    r.property( "lookahead", pursuit_dist_, "", 0.2, PropertyHints::limits(0.0, 1.0));
     
-    r.property( "steer_max", steer_max_, "", 0.8);
-    r.property( "weight offset", weight_offset_, "", 730);
-    r.property( "P steer", controller_steer_.p_, "", 1.0);
-    r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.9);
+    r.property( "steer_max", steer_max_, "", 1.0);
+    r.property( "weight offset", weight_offset_, "", 20);
+    r.property( "P steer", controller_steer_.p_, "", 2);
+    r.property( "I steer", controller_steer_.i_, "", 0.00);
+    r.property( "D steer", controller_steer_.d_, "", 1.3);
 
     r.property( "min distance", min_dist_, "", 0.45);
-    r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.8, PropertyHints::limits(0, 1) );
+    r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.9, PropertyHints::limits(0, 1) );
     
-    r.property( "P thr. error", controller_throttle_error_.p_, "", 3.0);
+    r.property( "P thr. error", controller_throttle_error_.p_, "", 5.0);
     r.property( "I thr. error", controller_throttle_error_.i_, "", 0.0);
-    r.property( "D thr. error", controller_throttle_error_.d_, "", 6);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 0);
 
     r.property( "P thr. offset", controller_throttle_offset_.p_, "", 4000);
     r.property( "I thr. offset", controller_throttle_offset_.i_, "", 0.0);
@@ -558,6 +613,8 @@ public:
     r.property( "I thr. dist", controller_throttle_dist_.i_, "", 0);
     r.property( "D thr. dist", controller_throttle_dist_.d_, "", -2000);
     
+    r.property( "sky_hist_threshold_", sky_hist_threshold_, "", 0.98);
+
     // add your own member variables here
     // use
     // r.property( "ReadableNameOfVariable", <variable>, "Description", <default value>, <property hints> );
