@@ -35,6 +35,7 @@ namespace cs_control
   * @returns uint16 the index of the largest distance
   */
   uint hist_calc_distances(
+    int last_max_index_,
     std::vector<double>& hist,
     std::function<uint(uint, uint)> img,
     unsigned int width,

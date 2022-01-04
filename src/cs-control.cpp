@@ -53,6 +53,7 @@ double cs_control::calc_column_dist(
 }
 
 uint cs_control::hist_calc_distances(
+  int last_max_index_,
   std::vector<double>& hist,
   std::function<uint(uint, uint)> img,
   unsigned int width,
@@ -127,7 +128,28 @@ uint cs_control::hist_calc_distances(
 
     }
   }
-  
+
+  // if the last max. index is still "good enough"
+  // prevents the path from flipping between two similarly good goal points
+  if (
+    last_max_index_ != -1 &&
+    std::abs(hist.at(last_max_index_) - max_dist) <= 1.0 / height
+  )
+  {
+    // find the group the index now belongs to
+    for (uint i = last_max_index_; i >= 0; i--)
+    {
+      if (group_sizes.at(i) != 0)
+      {
+        if (std::abs((int)group_sizes[i] - group_sizes[max_group_start]) <= 1)
+        {
+          max_group_start = i;
+        }
+        break;
+      }
+    }
+  }
+
   // if the group starts to the left or ends on the right, return the outermost index
   if (
     max_group_start == 0
