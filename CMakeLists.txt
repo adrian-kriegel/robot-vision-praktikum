@@ -26,7 +26,7 @@ MIRA_ADD_LIBRARY(ColorSegmentation
 MIRA_ADD_LIBRARY(OpticalFlow
     SHARED
     SOURCE
-        src/OpticalFlow.C
+        src/optical-flow.cpp
     LINK_LIBS
 		StudentTemplate
 		Reference

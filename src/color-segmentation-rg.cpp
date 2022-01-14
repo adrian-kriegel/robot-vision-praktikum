@@ -384,8 +384,8 @@ public:
     uint width = segmentation_->width();  
     uint height = segmentation_->height();
     uint sky_window_height = 10;
-    uint sky_window_width = 30;
-    uint sky_offset = 0;
+    uint sky_window_width = 50;
+    uint sky_offset = 10;
     for (uint x = width/2 - sky_window_width / 2; x < width/2 + sky_window_width/2; x++)
     {
       for (uint y = height/2 - sky_offset; y < height/2 - sky_offset + sky_window_height; y++)
@@ -397,9 +397,9 @@ public:
       }
     }
 
-    if ((double) total_sky / (sky_window_height*sky_window_width) > 0.7)
+    if (total_sky / (sky_window_height*sky_window_width) > 0.7)
     {
-      return mira::Velocity2(100, 0, 0);
+      return mira::Velocity2(max_speed_, 0, 0);
     }
 
     // split the image into vertical columns
@@ -554,6 +554,24 @@ public:
       throttle = 0;
     }
 
+    bool obst_left = (dist[0] + dist[1])/2.0 <= 0.4;
+    bool obst_right = (dist[dist.size() - 2] + dist[dist.size() - 1])/2.0 <= 0.4;
+    
+    if (obst_left)
+    {
+      angle = std::min(angle, -0.4);
+    }
+
+    if (obst_right)
+    {
+      angle = std::max(angle, 0.4);
+    }
+
+    if (obst_left && obst_right)
+    {
+      angle = 0;
+    }
+
     return mira::Velocity2(
       std::max(std::min(low_pass_throttle_.feed(throttle), max_speed_), 0.0),
       0,
@@ -592,18 +610,18 @@ public:
     
     r.property( "lookahead", pursuit_dist_, "", 0.2, PropertyHints::limits(0.0, 1.0));
     
-    r.property( "steer_max", steer_max_, "", 1.0);
+    r.property( "steer_max", steer_max_, "", 2.0);
     r.property( "weight offset", weight_offset_, "", 20);
     r.property( "P steer", controller_steer_.p_, "", 2);
     r.property( "I steer", controller_steer_.i_, "", 0.00);
-    r.property( "D steer", controller_steer_.d_, "", 1.3);
+    r.property( "D steer", controller_steer_.d_, "", 1.4);
 
     r.property( "min distance", min_dist_, "", 0.45);
     r.property( "alpha_throttle", low_pass_throttle_.alpha_, "", 0.9, PropertyHints::limits(0, 1) );
     
     r.property( "P thr. error", controller_throttle_error_.p_, "", 5.0);
     r.property( "I thr. error", controller_throttle_error_.i_, "", 0.0);
-    r.property( "D thr. error", controller_throttle_error_.d_, "", 0);
+    r.property( "D thr. error", controller_throttle_error_.d_, "", 1);
 
     r.property( "P thr. offset", controller_throttle_offset_.p_, "", 4000);
     r.property( "I thr. offset", controller_throttle_offset_.i_, "", 0.0);
