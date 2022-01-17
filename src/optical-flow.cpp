@@ -46,6 +46,7 @@ public:
     // do initialization stuff
 
     // you might want to initialize some class members etc.
+    last_angle_ = 0;
   }
 
   /**
@@ -95,7 +96,7 @@ public:
 
     for (int x = 0; x < oldImage.cols() - patch_delta; x += step_size) 
     {
-      for (int y = 0; y < oldImage.rows() - patch_size; y += step_size) 
+      for (int y = oldImage.rows()*0.5; y < oldImage.rows() - patch_size; y += step_size) 
       {
         Eigen::MatrixXf patch = oldImage.block(y, x, patch_size, patch_size);
 
@@ -131,9 +132,9 @@ public:
 
     // return the vector of feature points
     vector<InterestPoint> res;
-    res.reserve(50);
+    res.reserve(max_interest_points_);
 
-    while (!interestPoints.empty() && res.size() < 50) 
+    while (!interestPoints.empty() && res.size() < max_interest_points_) 
     {
       res.push_back(interestPoints.top().first);
       interestPoints.pop();
@@ -164,6 +165,11 @@ public:
 
     // create empty vector of optical flow vectors which will be return to the caller
     vector<OFVector> OFVectors;
+    OFVectors.reserve(interestPoints.size());
+
+    int corr_win = 1 + mCorrWin*2;
+
+    Eigen::MatrixXf origPatch(corr_win, corr_win);
 
     // process every Interest point given in the vector
     foreach ( InterestPoint const& p, interestPoints ) 
@@ -173,37 +179,75 @@ public:
 
       // you can omit points that are so close to the image boundary that the
       // correlation window does not fit. e.g. by
-      // if ( p.x()-mCorrWin >= 0 && p.x()+mCorrWin < oldImage.cols()
-      //	&& p.y()-mCorrWin >= 0 && p.y()+mCorrWin < oldImage.rows() ) {
-      // After that you can extract the reference patch from the old image:
-      // Eigen::MatrixXf origPatch = oldImage.block(
-      //	p.y()-mCorrWin,
-      //	p.x()-mCorrWin,
-      //	1+mCorrWin*2,
-      //	1+mCorrWin*2 );
-      // Now you need to "find" the patch in the new image by comparing it
-      // at every position in the search window
-      // for ( int x=p.x()-mSearchWin; x < p.x()+mSearchWin;++x) {
-      // 	for ( int y=p.y()-mSearchWin; y < p.y()+mSearchWin;++y) {
-      // You need to make sure that you do not run out of the image boundaries
-      // by extracting the image patches in the new image!
-      // Compute the difference between the two patch positions:
-      // Eigen::MatrixXf diff = newImage.block(y-mCorrWin,x-mCorrWin,1+mCorrWin*2,1+mCorrWin*2)-origPatch;
-      // now you can compute e.g. the SAD value from the difference matrix
-      // you need to find the minimum value and store the "displacement" values
-      // if the SAD Values are low enough (and/or if the position can be found with high
-      // confidence) you can add the optical flow vector to the list:
+      if ( 
+        p.x() - mCorrWin >= 0 && p.x() + mCorrWin < oldImage.cols() &&
+        p.y() - mCorrWin >= 0 && p.y() + mCorrWin < oldImage.rows()
+      )
+      {
+        // After that you can extract the reference patch from the old image:
+        origPatch = oldImage.block(
+          p.y() - mCorrWin,
+          p.x() - mCorrWin,
+          1 + mCorrWin*2,
+          1 + mCorrWin*2
+        );
 
-      // add a new optical flow vector at the position of the interest point
-      // the direction of the vector will be zero
-      OFVectors.push_back(
-        OFVector(
-          p.x(),  // x position
-          p.y(),  // y position
-          0,     // x direction
-          0      // y direction
-        )
-      );
+        // Now you need to "find" the patch in the new image by comparing it
+        // at every position in the search window
+        int x_min;
+        int y_min;
+        float sad_min = std::numeric_limits<float>::infinity();
+
+        for ( int x = p.x() - mSearchWin; x < p.x() + mSearchWin; x++)
+        {
+          for ( int y = p.y() - mSearchWin; y < p.y() + mSearchWin; y++)
+          {
+            // You need to make sure that you do not run out of the image boundaries
+            if (
+              y - mCorrWin >= 0 &&
+              x - mCorrWin >= 0 &&
+              y + 1 + mCorrWin < oldImage.rows() &&
+              x + 1 + mCorrWin < oldImage.cols()
+            )
+            {
+              // by extracting the image patches in the new image!
+              // Compute the difference between the two patch positions:
+              double sad = (
+                newImage.block(
+                  y - mCorrWin,
+                  x - mCorrWin,
+                  1 + mCorrWin*2,
+                  1 + mCorrWin*2
+                ) - origPatch
+              ).array().abs().sum();
+
+              // now you can compute e.g. the SAD value from the difference matrix
+              // you need to find the minimum value and store the "displacement" values
+              // if the SAD Values are low enough (and/or if the position can be found with high
+              // confidence) you can add the optical flow vector to the list:
+
+              if (sad < sad_min)
+              {
+                sad_min = sad;
+                x_min = x;
+                y_min = y;
+              }
+            } 
+          }
+        }
+
+        if (sad_min < sad_max_ * (1 + mCorrWin*2)*(1 + mCorrWin*2))
+        {
+          OFVectors.push_back(
+            OFVector(
+              p.x(),  // x position
+              p.y(),  // y position
+              x_min - p.x(),     // x direction
+              y_min - p.y()     // y direction
+            )
+          );
+        }
+      }
     }
 
     return OFVectors;
@@ -226,19 +270,27 @@ public:
     double throttle=0.2; 	// range 0 - 1 suggested
     double angle=1;			// range -pi - +pi suggested
 
+    // steering correction for the flow vectors
+    Eigen::Vector2i correction(
+      - correct_rotation_ * last_angle_,
+      0
+    );
 
     // the OFVector structure consist of a position pos and a direction dir
     // Accessing the pos of a OFVector looks like:
     // Eigen::Vector2i position = p.pos;
-    foreach( OFVector const& v, OFVectors ) {
+    foreach( OFVector const& v, OFVectors ) 
+    {
       // you can obtain the position of the vector using:
       Eigen::Vector2i position = v.pos;
       // and the x and y values of this position by: position.x() and position.y()
 
       // you can access the direction of the vector using:
-      Eigen::Vector2i direction = v.dir;
+      Eigen::Vector2i direction = v.dir - correction;
       // and the x and y components of the direction by: direction.x() and direction.y()
     }
+
+    last_angle_ = angle;
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
@@ -263,10 +315,20 @@ public:
     r.property( "threshold", threshold_, "", 0.1 );
     r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 5, PropertyHints::limits(1, 30) );
     r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)", 15, PropertyHints::limits(1, 30) );
+    r.property( "max_interest_points", max_interest_points_, "", 7, PropertyHints::limits(1, 100));
+    r.property( "sad_max_", sad_max_, "", 7);
+    r.property( "correct_rotation_", correct_rotation_, "", 7);
   }
 
 public:
   double threshold_;
+  double sad_max_;
+  uint max_interest_points_;
+
+  double correct_rotation_;
+
+  double last_angle_;
+
   // Variables mSerachWin and mCorrWin are already declared in the parent
   // class. You should use these variables to define the size of the search
   // window and the correlation window
