@@ -12,9 +12,14 @@
 #include <serialization/DefaultInitializer.h>
 #include <image/Img.h>
 
+#include "cs-control.hpp"
+#include "util.hpp"
+
 using namespace std;
 using namespace mira;
 using namespace student;
+using namespace cs_control;
+using namespace util;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -47,6 +52,8 @@ public:
 
     // you might want to initialize some class members etc.
     last_angle_ = 0;
+
+    controller_steer_.reset_state();
   }
 
   /**
@@ -159,6 +166,7 @@ public:
       Eigen::MatrixXf const& newImage,
       vector<InterestPoint> const& interestPoints )
   {
+    image_width_ = oldImage.cols();
     // Call the reference implementation
     // Remove or comment the following line to make use of your own implementation!!
     // return OF::calculateOpticalFlow( oldImage, newImage, interestPoints, mSearchWin, mCorrWin );
@@ -198,9 +206,9 @@ public:
         int y_min;
         float sad_min = std::numeric_limits<float>::infinity();
 
-        for ( int x = p.x() - mSearchWin; x < p.x() + mSearchWin; x++)
+        for ( int x = p.x() - mSearchWin; x + mSearchWin <= p.x(); x++)
         {
-          for ( int y = p.y() - mSearchWin; y < p.y() + mSearchWin; y++)
+          for ( int y = p.y(); y <= p.y() + mSearchWin; y++)
           {
             // You need to make sure that you do not run out of the image boundaries
             if (
@@ -264,11 +272,10 @@ public:
   {
     // Call the reference implementation
     // Remove or comment the following line to make use of your own implementation!!
-    return OF::getDriveCommand( OFVectors );
+    // return OF::getDriveCommand( OFVectors );
 
     // set throttle and steering angle depending on the segmented image
-    double throttle=0.2; 	// range 0 - 1 suggested
-    double angle=1;			// range -pi - +pi suggested
+    double throttle = 0.8; 	// range 0 - 1 suggested
 
     // steering correction for the flow vectors
     Eigen::Vector2i correction(
@@ -276,26 +283,47 @@ public:
       0
     );
 
-    // the OFVector structure consist of a position pos and a direction dir
-    // Accessing the pos of a OFVector looks like:
-    // Eigen::Vector2i position = p.pos;
+    double avg_left = 0;
+    double avg_right = 0;
+    double total_center = 0;
+    int num_left = 0;
+    int num_right = 0;
+    int num_center = 0;
+
+    double wall_width = 0.25 * image_width_;
+
     foreach( OFVector const& v, OFVectors ) 
     {
-      // you can obtain the position of the vector using:
-      Eigen::Vector2i position = v.pos;
-      // and the x and y values of this position by: position.x() and position.y()
+      double length = (v.dir - correction).norm();
 
-      // you can access the direction of the vector using:
-      Eigen::Vector2i direction = v.dir - correction;
-      // and the x and y components of the direction by: direction.x() and direction.y()
+      if (v.pos.x() < wall_width)
+      {
+        avg_left += v.dir.x();
+        num_left++;
+      }
+      else if(v.pos.x() >= image_width_-wall_width)
+      {
+        avg_right += v.dir.x();
+        num_right++;
+      }
+      else
+      {
+        total_center += length;
+        num_center++;
+      }
     }
-
-    last_angle_ = angle;
+    
+    last_angle_ = clamp(
+      controller_steer_.feed(
+        avg_right - avg_left
+      ),
+      steer_max_
+    );
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
     // move sideways while looking forward
-    return Velocity2( throttle, 0, angle );
+    return Velocity2(throttle, 0, last_angle_);
   }
 
   template <typename Reflector>
@@ -312,12 +340,17 @@ public:
     // to add read only members.
 
     // e.g. you can add a member variable which defines to height and width of your roi
-    r.property( "threshold", threshold_, "", 0.1 );
-    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 5, PropertyHints::limits(1, 30) );
+    r.property( "threshold", threshold_, "", 100);
+    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 7, PropertyHints::limits(1, 30) );
     r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)", 15, PropertyHints::limits(1, 30) );
     r.property( "max_interest_points", max_interest_points_, "", 7, PropertyHints::limits(1, 100));
-    r.property( "sad_max_", sad_max_, "", 7);
-    r.property( "correct_rotation_", correct_rotation_, "", 7);
+    r.property( "sad_max_", sad_max_, "", 30);
+    r.property( "correct_rotation_", correct_rotation_, "", 0.0);
+
+    r.property( "steer_max", steer_max_, "", 0.3);
+    r.property( "P steer", controller_steer_.p_, "", 0.1);
+    r.property( "I steer", controller_steer_.i_, "", 0.0);
+    r.property( "D steer", controller_steer_.d_, "", 0.0);
   }
 
 public:
@@ -328,6 +361,12 @@ public:
   double correct_rotation_;
 
   double last_angle_;
+
+  double steer_max_;
+
+  int image_width_;
+
+  PIDController controller_steer_;
 
   // Variables mSerachWin and mCorrWin are already declared in the parent
   // class. You should use these variables to define the size of the search

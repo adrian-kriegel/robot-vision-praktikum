@@ -137,7 +137,7 @@ uint cs_control::hist_calc_distances(
   )
   {
     // find the group the index now belongs to
-    for (uint i = last_max_index_; i >= 0; i--)
+    for (int i = last_max_index_; i >= 0; i--)
     {
       if (group_sizes.at(i) != 0)
       {
