@@ -13,12 +13,14 @@
 #include <image/Img.h>
 
 #include "cs-control.hpp"
+#include "of-util.hpp"
 #include "util.hpp"
 
 using namespace std;
 using namespace mira;
 using namespace student;
 using namespace cs_control;
+using namespace of_util;
 using namespace util;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -43,6 +45,7 @@ class OpticalFlow_58941 : public OpticalFlowTemplate {
 public:
 
   OpticalFlow_58941()
+    : controller_brake_(0.0)
   {
     // the following macro initializes all variables stated in the reflect() function
     // to their default values
@@ -53,7 +56,7 @@ public:
     // you might want to initialize some class members etc.
     last_angle_ = 0;
 
-    controller_steer_.reset_state();
+    low_pass_throttle_.reset_state();
   }
 
   /**
@@ -101,9 +104,13 @@ public:
 
     float err_min;
 
-    for (int x = 0; x < oldImage.cols() - patch_delta; x += step_size) 
+    int padding = std::max(patch_delta, mSearchWin) + 3;
+
+    // ignore any points whose search windows cross outside the image
+    // (x,y) is the top left corner of the patch
+    for (int x = padding; x < oldImage.cols() - padding; x += step_size) 
     {
-      for (int y = oldImage.rows()*0.5; y < oldImage.rows() - patch_size; y += step_size) 
+      for (int y = oldImage.rows()*0.25; y < oldImage.rows() - padding; y += step_size) 
       {
         Eigen::MatrixXf patch = oldImage.block(y, x, patch_size, patch_size);
 
@@ -132,7 +139,11 @@ public:
 
         if (err_min/(patch_size*patch_size) > threshold_)
         {
-          interestPoints.push(std::make_pair(InterestPoint(x,y), err_min));
+          interestPoints.push(std::make_pair(
+            // store the center of the patch
+            InterestPoint(x + patch_size / 2, y + patch_size/2), 
+            err_min
+          ));
         }
       }
     }
@@ -175,88 +186,37 @@ public:
     vector<OFVector> OFVectors;
     OFVectors.reserve(interestPoints.size());
 
-    int corr_win = 1 + mCorrWin*2;
 
-    Eigen::MatrixXf origPatch(corr_win, corr_win);
+    int factor = scaling_factor_;
 
-    // process every Interest point given in the vector
-    foreach ( InterestPoint const& p, interestPoints ) 
-    {
-      // The following lines provide a rough guideline on how to
-      // implement image patch correlation
+    Eigen::MatrixXf old_scaled(oldImage.rows() / factor, oldImage.cols() / factor);
+    Eigen::MatrixXf new_scaled(oldImage.rows() / factor, oldImage.cols() / factor);
 
-      // you can omit points that are so close to the image boundary that the
-      // correlation window does not fit. e.g. by
-      if ( 
-        p.x() - mCorrWin >= 0 && p.x() + mCorrWin < oldImage.cols() &&
-        p.y() - mCorrWin >= 0 && p.y() + mCorrWin < oldImage.rows()
-      )
-      {
-        // After that you can extract the reference patch from the old image:
-        origPatch = oldImage.block(
-          p.y() - mCorrWin,
-          p.x() - mCorrWin,
-          1 + mCorrWin*2,
-          1 + mCorrWin*2
-        );
+    scale(old_scaled, oldImage);
+    scale(new_scaled, newImage);
 
-        // Now you need to "find" the patch in the new image by comparing it
-        // at every position in the search window
-        int x_min;
-        int y_min;
-        float sad_min = std::numeric_limits<float>::infinity();
+    old_scaled /= old_scaled.array().abs().maxCoeff();
+    new_scaled /= new_scaled.array().abs().maxCoeff();
 
-        for ( int x = p.x() - mSearchWin; x + mSearchWin <= p.x(); x++)
-        {
-          for ( int y = p.y(); y <= p.y() + mSearchWin; y++)
-          {
-            // You need to make sure that you do not run out of the image boundaries
-            if (
-              y - mCorrWin >= 0 &&
-              x - mCorrWin >= 0 &&
-              y + 1 + mCorrWin < oldImage.rows() &&
-              x + 1 + mCorrWin < oldImage.cols()
-            )
-            {
-              // by extracting the image patches in the new image!
-              // Compute the difference between the two patch positions:
-              double sad = (
-                newImage.block(
-                  y - mCorrWin,
-                  x - mCorrWin,
-                  1 + mCorrWin*2,
-                  1 + mCorrWin*2
-                ) - origPatch
-              ).array().abs().sum();
+    /*
+    lucas_kanade_.calc_optical_flow(
+      OFVectors,
+      old_scaled,
+      new_scaled,
+      interestPoints,
+      mSearchWin,
+      factor
+    );
+    */
 
-              // now you can compute e.g. the SAD value from the difference matrix
-              // you need to find the minimum value and store the "displacement" values
-              // if the SAD Values are low enough (and/or if the position can be found with high
-              // confidence) you can add the optical flow vector to the list:
-
-              if (sad < sad_min)
-              {
-                sad_min = sad;
-                x_min = x;
-                y_min = y;
-              }
-            } 
-          }
-        }
-
-        if (sad_min < sad_max_ * (1 + mCorrWin*2)*(1 + mCorrWin*2))
-        {
-          OFVectors.push_back(
-            OFVector(
-              p.x(),  // x position
-              p.y(),  // y position
-              x_min - p.x(),     // x direction
-              y_min - p.y()     // y direction
-            )
-          );
-        }
-      }
-    }
+    window_search_.calc_optical_flow(
+      OFVectors,
+      old_scaled,
+      new_scaled,
+      interestPoints,
+      mSearchWin*2,
+      mCorrWin*2
+    );
 
     return OFVectors;
   }
@@ -274,12 +234,9 @@ public:
     // Remove or comment the following line to make use of your own implementation!!
     // return OF::getDriveCommand( OFVectors );
 
-    // set throttle and steering angle depending on the segmented image
-    double throttle = 0.8; 	// range 0 - 1 suggested
-
     // steering correction for the flow vectors
     Eigen::Vector2i correction(
-      - correct_rotation_ * last_angle_,
+      correct_rotation_ * last_angle_,
       0
     );
 
@@ -290,7 +247,12 @@ public:
     int num_right = 0;
     int num_center = 0;
 
-    double wall_width = 0.25 * image_width_;
+    // number of OF vectors with almost zero length (using double to avoid casting later on)
+    int obst_left = 0;
+    int obst_right = 0;
+    int obst_center = 0;
+
+    double wall_width = 0.2 * image_width_;
 
     foreach( OFVector const& v, OFVectors ) 
     {
@@ -298,27 +260,81 @@ public:
 
       if (v.pos.x() < wall_width)
       {
-        avg_left += v.dir.x();
-        num_left++;
+        if (length < obst_threshold_)
+        {
+          obst_left++;
+        }
+        else 
+        {
+          avg_left += length;
+          num_left++;
+        }
       }
-      else if(v.pos.x() >= image_width_-wall_width)
+      else if(v.pos.x() >= image_width_ - wall_width)
       {
-        avg_right += v.dir.x();
-        num_right++;
+        if (length < obst_threshold_)
+        {
+          obst_right++;
+        }
+        else 
+        {
+          avg_right += length;
+          num_right++;
+        }
       }
       else
       {
-        total_center += length;
-        num_center++;
+        if (length < obst_threshold_)
+        {
+          obst_center += 2;
+        }
+        else 
+        {
+          num_center++;
+        }
       }
     }
     
+    // error estimation for driving in the middle of the corridor
+    double error = (avg_left - avg_right);
+
+    if (avg_left + avg_right != 0)
+    {
+      error /= (avg_left + avg_right);
+    }
+
+    int min_obst = std::min(obst_left, std::min(obst_right, obst_center));
+    
     last_angle_ = clamp(
       controller_steer_.feed(
-        avg_right - avg_left
+        std::pow(error, 3)
       ),
       steer_max_
     );
+
+    // if there is an obstacle (OF pointing towards the robot), clip the steering angle
+    if (min_obst >= 3)
+    {
+      if (min_obst == obst_left)
+      {
+        last_angle_ = steer_max_*3;
+      }
+      else if(min_obst == obst_right)
+      {
+        last_angle_ = -steer_max_*3;
+      }
+      else
+      {
+        last_angle_ = std::copysign(steer_max_*3, error);
+      }
+
+      controller_steer_.reset_state();
+    }
+
+    double throttle = low_pass_throttle_.feed(std::max(
+      speed_max_ * (1.0 + controller_brake_.feed(num_center)),
+      0.0
+    ));
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
@@ -341,32 +357,56 @@ public:
 
     // e.g. you can add a member variable which defines to height and width of your roi
     r.property( "threshold", threshold_, "", 100);
-    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 7, PropertyHints::limits(1, 30) );
-    r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)", 15, PropertyHints::limits(1, 30) );
+    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 4, PropertyHints::limits(1, 30) );
+    r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)",12, PropertyHints::limits(1, 30) );
+    r.property( "search_step", search_step_, "", 3);
+    
     r.property( "max_interest_points", max_interest_points_, "", 7, PropertyHints::limits(1, 100));
-    r.property( "sad_max_", sad_max_, "", 30);
-    r.property( "correct_rotation_", correct_rotation_, "", 0.0);
+    
+    r.property( "correct_rotation_", correct_rotation_, "", 2.5);
+    r.property( "obst_threshold_", obst_threshold_, "", 3);
 
-    r.property( "steer_max", steer_max_, "", 0.3);
-    r.property( "P steer", controller_steer_.p_, "", 0.1);
+    r.property( "steer_max", steer_max_, "", 0.8);
+    r.property( "P steer", controller_steer_.p_, "", 0.4);
     r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.0);
+    r.property( "D steer", controller_steer_.d_, "", 0.3);
+
+
+    r.property( "speed_max_", speed_max_, "", 2.0);
+    r.property( "lp throttle", low_pass_throttle_.alpha_, "", 0.4);
+    r.property( "P brake", controller_brake_.p_, "", 0.3);
+    r.property( "I brake", controller_brake_.i_, "", 0.0);
+    r.property( "D brake", controller_brake_.d_, "", 0.1);
+
+    r.property( "scaling", scaling_factor_, "", 1);
+    r.property( "sad max", window_search_.sad_max_, "", 30);
   }
 
 public:
   double threshold_;
-  double sad_max_;
-  uint max_interest_points_;
 
+  uint max_interest_points_;
+  int scaling_factor_;
   double correct_rotation_;
 
   double last_angle_;
 
   double steer_max_;
 
+  double obst_threshold_;
+
   int image_width_;
 
+  int search_step_;
+
+  double speed_max_;
+
   PIDController controller_steer_;
+  PIDController controller_brake_;
+  LowPass<double> low_pass_throttle_;
+
+  LucasKanade lucas_kanade_;
+  WindowSearch window_search_;
 
   // Variables mSerachWin and mCorrWin are already declared in the parent
   // class. You should use these variables to define the size of the search

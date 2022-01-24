@@ -9,6 +9,9 @@
 #include <serialization/Serialization.h>
 #include <serialization/DefaultInitializer.h>
 #include <image/Img.h>
+#include <Eigen/Dense>
+#include <Eigen/StdVector>
+#include "of-util.hpp"
 
 #include "util.hpp"
 #include "cs-control.hpp"
@@ -16,11 +19,28 @@
 
 using namespace std;
 using namespace mira;
+using namespace of_util;
 using namespace rv;
 using namespace student;
 using namespace util;
 
 ///////////////////////////////////////////////////////////////////////////////
+
+Eigen::MatrixXf img2mat(const BGRImage& img)
+{
+  Eigen::MatrixXf res(img.height(), img.width());
+
+  for (int y=0; y < img.height(); y++) 
+  {
+    // loop along y
+    for (int x=0; x < img.width(); x++) 
+    {
+      res(y, x) = img(x, y)[0] + img(x, y)[1] + img(x, y)[2];
+    }
+  }
+
+  return res;
+}
 
 /**
  * @brief Example implementation for steering the robot on the basis of
@@ -141,13 +161,61 @@ public:
    */
   GrayImage segmentImage( BGRImage const& inputImage )
   {
-    
+    /*
     // create new segmented image
     if(segmentation_ == NULL)
     {
       segmentation_ = new GrayImage(inputImage.width(), inputImage.height());
+      last_img_ = img2mat(inputImage);
+      return *segmentation_;
     }
 
+
+
+    Eigen::Matrix3f box_smooth;
+    Eigen::Matrix3f sobel_x;
+
+    box_smooth << 
+      1, 1, 1,
+      1, 1, 1,
+      1, 1, 1
+    ;
+
+    sobel_x << 
+      1, 0, -1,
+      2, 0, -2,
+      1, 0 , -1
+    ;
+
+    box_smooth *= 1.0/9;
+
+    Eigen::MatrixXf img = img2mat(inputImage);
+    
+    Eigen::MatrixXf result(inputImage.height(), inputImage.width());
+
+    
+    
+    conv_2d_sparse(
+      result,
+      img,
+      Eigen::MatrixXf(sobel_x.transpose())
+    );
+    
+    result.array() -= result.minCoeff();
+
+    result.array() /= result.maxCoeff() / 255.0;
+
+    for (int y=0; y < result.rows(); y++) 
+    {
+      // loop along y
+      for (int x=0; x < result.cols(); x++) 
+      {
+        (*segmentation_)(x, y) = result(y,x);
+      }
+    }
+
+    return *segmentation_;
+    */
     // call function BRG_to_RG (have to be implemented properly)
     // to convert bgr image to rg
     // please note that the rg values are normalized between 0 and 1
