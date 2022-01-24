@@ -57,6 +57,9 @@ public:
     last_angle_ = 0;
 
     low_pass_throttle_.reset_state();
+
+    last_throttle_ = 0;
+    last_angle_ = 0;
   }
 
   /**
@@ -230,116 +233,84 @@ public:
    */
   Velocity2 getDriveCommand( vector<OFVector> const& OFVectors )
   {
-    // Call the reference implementation
-    // Remove or comment the following line to make use of your own implementation!!
-    // return OF::getDriveCommand( OFVectors );
+    double fov = M_PI/180.0 * 60;
 
-    // steering correction for the flow vectors
-    Eigen::Vector2i correction(
-      correct_rotation_ * last_angle_,
-      0
+    std::vector<double> dist(OFVectors.size());
+    
+    int num_stripes = 5;
+
+    // distance histogram of the image
+    Eigen::VectorXf hist = Eigen::VectorXf::Zero(num_stripes);
+    // number of OF-vectors per stripe
+    Eigen::VectorXf density(hist);
+
+    // max. allowed distance of the histogram
+    double clipping_distance = 30;
+
+    calc_distances(
+      dist,
+      OFVectors,
+      image_width_,
+      fov,
+      last_angle_,
+      last_throttle_
     );
 
-    double avg_left = 0;
-    double avg_right = 0;
-    double total_center = 0;
-    int num_left = 0;
-    int num_right = 0;
-    int num_center = 0;
-
-    // number of OF vectors with almost zero length (using double to avoid casting later on)
-    int obst_left = 0;
-    int obst_right = 0;
-    int obst_center = 0;
-
-    double wall_width = 0.2 * image_width_;
-
-    foreach( OFVector const& v, OFVectors ) 
+    for (int i = 0; i < dist.size(); i++)
     {
-      double length = (v.dir - correction).norm();
+      if (std::isnan(dist[i]))
+      {
+        dist[i] = 0.6;
+      }
 
-      if (v.pos.x() < wall_width)
+
+      // distance < 0 may happen due to invalid flow vectors
+      if (dist[i] >= 0)
       {
-        if (length < obst_threshold_)
-        {
-          obst_left++;
-        }
-        else 
-        {
-          avg_left += length;
-          num_left++;
-        }
-      }
-      else if(v.pos.x() >= image_width_ - wall_width)
-      {
-        if (length < obst_threshold_)
-        {
-          obst_right++;
-        }
-        else 
-        {
-          avg_right += length;
-          num_right++;
-        }
-      }
-      else
-      {
-        if (length < obst_threshold_)
-        {
-          obst_center += 2;
-        }
-        else 
-        {
-          num_center++;
-        }
+        double x = OFVectors.at(i).pos.x();
+        int hist_index = x * (double)num_stripes / image_width_;
+        hist(hist_index) += dist[i];
+        density(hist_index)++;
       }
     }
-    
-    // error estimation for driving in the middle of the corridor
-    double error = (avg_left - avg_right);
 
-    if (avg_left + avg_right != 0)
+    // average out all distances
+    hist.array() /= density.array();
+
+    double max_hist = 0;
+
+    // clip the histogram values and find the maximum
+    for (int i = 0; i < num_stripes; i++)
     {
-      error /= (avg_left + avg_right);
+      // also clip any points without flow vectors
+      if (density(i) <= 0.9 || hist(i) > clipping_distance)
+      {
+        hist(i) = clipping_distance;
+      }
+
+      if (hist(i) >= max_hist)
+      {
+        max_hist = hist(i);
+      }
     }
 
-    int min_obst = std::min(obst_left, std::min(obst_right, obst_center));
-    
-    last_angle_ = clamp(
-      controller_steer_.feed(
-        std::pow(error, 3)
-      ),
-      steer_max_
+    int max_index = util::plateau_center(
+      hist,
+      max_hist,
+      0.3,
+      -1
     );
 
-    // if there is an obstacle (OF pointing towards the robot), clip the steering angle
-    if (min_obst >= 3)
-    {
-      if (min_obst == obst_left)
-      {
-        last_angle_ = steer_max_*3;
-      }
-      else if(min_obst == obst_right)
-      {
-        last_angle_ = -steer_max_*3;
-      }
-      else
-      {
-        last_angle_ = std::copysign(steer_max_*3, error);
-      }
+    last_angle_ = controller_steer_.feed(
+      ((double)max_index / num_stripes - 0.5) * fov*0.5
+    );
 
-      controller_steer_.reset_state();
-    }
-
-    double throttle = low_pass_throttle_.feed(std::max(
-      speed_max_ * (1.0 + controller_brake_.feed(num_center)),
-      0.0
-    ));
+    last_throttle_ = 0.8;
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
     // move sideways while looking forward
-    return Velocity2(throttle, 0, last_angle_);
+    return Velocity2(last_throttle_, 0, last_angle_);
   }
 
   template <typename Reflector>
@@ -364,19 +335,20 @@ public:
     r.property( "max_interest_points", max_interest_points_, "", 7, PropertyHints::limits(1, 100));
     
     r.property( "correct_rotation_", correct_rotation_, "", 2.5);
-    r.property( "obst_threshold_", obst_threshold_, "", 3);
+    r.property( "obst_threshold_", obst_threshold_, "", 1);
 
-    r.property( "steer_max", steer_max_, "", 0.8);
-    r.property( "P steer", controller_steer_.p_, "", 0.4);
+    r.property( "steer_max", steer_max_, "", 2.0);
+    r.property( "P steer", controller_steer_.p_, "", 1.4);
     r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.3);
+    r.property( "D steer", controller_steer_.d_, "", 0.0);
+    r.property( "deflect", deflect_, "", 1.0);
 
 
-    r.property( "speed_max_", speed_max_, "", 2.0);
+    r.property( "speed_max_", speed_max_, "", 1.5);
     r.property( "lp throttle", low_pass_throttle_.alpha_, "", 0.4);
-    r.property( "P brake", controller_brake_.p_, "", 0.3);
+    r.property( "P brake", controller_brake_.p_, "", 0.1);
     r.property( "I brake", controller_brake_.i_, "", 0.0);
-    r.property( "D brake", controller_brake_.d_, "", 0.1);
+    r.property( "D brake", controller_brake_.d_, "", 0.8);
 
     r.property( "scaling", scaling_factor_, "", 1);
     r.property( "sad max", window_search_.sad_max_, "", 30);
@@ -384,12 +356,13 @@ public:
 
 public:
   double threshold_;
+  double deflect_;
 
   uint max_interest_points_;
   int scaling_factor_;
   double correct_rotation_;
 
-  double last_angle_;
+  double last_angle_, last_throttle_;
 
   double steer_max_;
 

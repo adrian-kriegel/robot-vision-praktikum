@@ -81,6 +81,45 @@ void scale(
   }
 }
 
+void calc_distances(
+  std::vector<double>& dist,
+  const std::vector<student::OFVector>& of_vectors,
+  int image_width,
+  double fov,
+  double phi_dot,
+  double v
+)
+{
+  double a, f, disc;
+
+  for (int i = 0; i < of_vectors.size(); i++)
+  {
+    a = - fov/2.0 * (of_vectors.at(i).pos.x()/image_width - 0.5);
+    f = of_vectors.at(i).dir.x();
+
+    if (std::abs(phi_dot) <= 0.1)
+    {
+      dist[i] = -std::sin(a) / f;
+    }
+    else 
+    {
+      disc = f/(2.0*phi_dot) + std::sin(a)*v / phi_dot;
+
+      if (disc >= 0)
+      {
+        dist[i] = std::max(
+          f / phi_dot + std::sqrt(disc),
+          f / phi_dot - std::sqrt(disc)
+        );
+      }
+      else 
+      {
+        dist[i] = NAN;
+      }
+    }
+  }
+}
+
 class WindowSearch
 {
 public:
