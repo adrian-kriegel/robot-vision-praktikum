@@ -18,7 +18,7 @@ namespace util
 
   // finds center of largest plateau at specified height
   // returns leftmost or rightmost point if the plateau is on the edge
-  int plateau_center(
+  double plateau_center(
     Eigen::MatrixXf hist,
     double height,
     double tol,

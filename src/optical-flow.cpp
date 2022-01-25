@@ -44,8 +44,10 @@ class OpticalFlow_58941 : public OpticalFlowTemplate {
 
 public:
 
-  OpticalFlow_58941()
-    : controller_brake_(0.0)
+  OpticalFlow_58941() :
+    // set max. values for brake controllers to prevent them from speeding up the robot
+    controller_brake_dist_(0.0),
+    controller_brake_steer_(0.0)
   {
     // the following macro initializes all variables stated in the reflect() function
     // to their default values
@@ -60,6 +62,11 @@ public:
 
     last_throttle_ = 0;
     last_angle_ = 0;
+
+    last_max_index_ = -1;
+
+    controller_brake_steer_.i_ = 0;
+    controller_brake_dist_.i_ = 0;
   }
 
   /**
@@ -91,7 +98,7 @@ public:
     // cycle through the image with a step width of 20 pixels
     // Of course, this is quite useless and should be replaced.
 
-    int step_size = 20;
+    int step_size = 5;
     int patch_size = step_size;
     int patch_delta = patch_size / 2;
 
@@ -113,7 +120,7 @@ public:
     // (x,y) is the top left corner of the patch
     for (int x = padding; x < oldImage.cols() - padding; x += step_size) 
     {
-      for (int y = oldImage.rows()*0.25; y < oldImage.rows() - padding; y += step_size) 
+      for (int y = oldImage.rows()*0.45; y < oldImage.rows() - padding; y += step_size) 
       {
         Eigen::MatrixXf patch = oldImage.block(y, x, patch_size, patch_size);
 
@@ -233,19 +240,16 @@ public:
    */
   Velocity2 getDriveCommand( vector<OFVector> const& OFVectors )
   {
-    double fov = M_PI/180.0 * 60;
+    double fov = M_PI/180.0 * fov_;
 
     std::vector<double> dist(OFVectors.size());
     
-    int num_stripes = 5;
+    int num_stripes = 12;
 
     // distance histogram of the image
     Eigen::VectorXf hist = Eigen::VectorXf::Zero(num_stripes);
     // number of OF-vectors per stripe
     Eigen::VectorXf density(hist);
-
-    // max. allowed distance of the histogram
-    double clipping_distance = 30;
 
     calc_distances(
       dist,
@@ -256,6 +260,22 @@ public:
       last_throttle_
     );
 
+    // max. allowed distance of the histogram
+    double clipping_distance = 0;
+
+    for (auto const & d : dist)
+    {
+      if (d > clipping_distance)
+      {
+        clipping_distance = d;
+      }
+    }
+
+    clipping_distance += 5;
+    // turn the distances into a histogram
+    // the histogram must have the same (or larger) padding as the interest operator
+    int padding = (mSearchWin + 3);
+
     for (int i = 0; i < dist.size(); i++)
     {
       if (std::isnan(dist[i]))
@@ -263,14 +283,25 @@ public:
         dist[i] = 0.6;
       }
 
-
       // distance < 0 may happen due to invalid flow vectors
+      // this case should be ignored
       if (dist[i] >= 0)
       {
-        double x = OFVectors.at(i).pos.x();
-        int hist_index = x * (double)num_stripes / image_width_;
-        hist(hist_index) += dist[i];
-        density(hist_index)++;
+        double x = OFVectors.at(i).pos.x() - padding;
+        int hist_index = std::max(std::min(
+          (int)(x * (double)num_stripes / (image_width_-(2*padding))),
+          num_stripes - 1
+        ), 0);
+        double x_hist = (image_width_-(2*padding));
+        // points could only travel directly towards the camera if they are in the center
+        if (
+          (x_hist > 0.3 && x_hist < 0.7) ||
+          OFVectors.at(i).dir.norm() > 1
+        )
+        {
+          hist(hist_index) += dist[i];
+          density(hist_index)++;
+        }  
       }
     }
 
@@ -294,18 +325,37 @@ public:
       }
     }
 
-    int max_index = util::plateau_center(
+    // put the histogram through a low pass
+    // Eigen::VectorXf hist_cpy(hist);
+    // hist = low_pass_hist_.feed(hist);
+    
+    // find the center of the highest plateau in the histogram
+    double max_index = util::plateau_center(
       hist,
       max_hist,
-      0.3,
-      -1
+      1,
+      last_max_index_
     );
 
-    last_angle_ = controller_steer_.feed(
-      ((double)max_index / num_stripes - 0.5) * fov*0.5
-    );
+    // calculate the angle corresponding to the highest point
+    double error = (max_index / (num_stripes-1) - 0.5) * fov*0.5;
 
-    last_throttle_ = 0.8;
+    error += weight_pow_*std::pow(error, 3);
+
+    error = clamp(error, fov*3.0);
+
+    last_angle_ = controller_steer_.feed(error);
+
+    last_throttle_ = low_pass_throttle_.feed(std::max(
+      speed_max_ * (
+        1.0 + 
+        controller_brake_dist_.feed(hist.mean()) +
+        controller_brake_steer_.feed(std::abs(last_angle_))
+      ),
+      0.0
+    ));
+    
+    last_angle_ = clamp(last_angle_, steer_max_);
 
     // pass the velocity command to the robot
     // the second value should be zero since the robot cannot
@@ -328,41 +378,48 @@ public:
 
     // e.g. you can add a member variable which defines to height and width of your roi
     r.property( "threshold", threshold_, "", 100);
-    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 4, PropertyHints::limits(1, 30) );
-    r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)",12, PropertyHints::limits(1, 30) );
+    r.property( "corrWin", mCorrWin, "size of the correlation window (multiplied by 2)", 3, PropertyHints::limits(1, 30) );
+    r.property( "searchWin", mSearchWin, "size of the search window (multiplied by 2)",10, PropertyHints::limits(1, 30) );
     r.property( "search_step", search_step_, "", 3);
     
     r.property( "max_interest_points", max_interest_points_, "", 7, PropertyHints::limits(1, 100));
-    
-    r.property( "correct_rotation_", correct_rotation_, "", 2.5);
-    r.property( "obst_threshold_", obst_threshold_, "", 1);
 
-    r.property( "steer_max", steer_max_, "", 2.0);
-    r.property( "P steer", controller_steer_.p_, "", 1.4);
+    r.property( "steer_max", steer_max_, "", 1);
+    r.property( "P steer", controller_steer_.p_, "", 3);
     r.property( "I steer", controller_steer_.i_, "", 0.0);
-    r.property( "D steer", controller_steer_.d_, "", 0.0);
-    r.property( "deflect", deflect_, "", 1.0);
+    r.property( "D steer", controller_steer_.d_, "", 1);
 
+    r.property("fov", fov_, "", 60);
 
-    r.property( "speed_max_", speed_max_, "", 1.5);
-    r.property( "lp throttle", low_pass_throttle_.alpha_, "", 0.4);
-    r.property( "P brake", controller_brake_.p_, "", 0.1);
-    r.property( "I brake", controller_brake_.i_, "", 0.0);
-    r.property( "D brake", controller_brake_.d_, "", 0.8);
+    r.property( "speed_max_", speed_max_, "", 2.2);
+    r.property( "lp throttle", low_pass_throttle_.alpha_, "", 0.9);
+
+    r.property( "P br steer", controller_brake_steer_.p_, "", 1.2);
+    r.property( "D br steer", controller_brake_steer_.d_, "", 40);
+
+    r.property( "P br dist", controller_brake_dist_.p_, "", 0);
+    r.property( "D br dist", controller_brake_dist_.d_, "", 1);
 
     r.property( "scaling", scaling_factor_, "", 1);
     r.property( "sad max", window_search_.sad_max_, "", 30);
+    r.property( "lp hist", low_pass_hist_.alpha_, "", 0.02);
+
+
+    r.property( "pow3", weight_pow_, "", 105);
   }
 
 public:
   double threshold_;
   double deflect_;
 
+  double fov_;
+
   uint max_interest_points_;
   int scaling_factor_;
   double correct_rotation_;
 
   double last_angle_, last_throttle_;
+  double weight_pow_;
 
   double steer_max_;
 
@@ -374,9 +431,15 @@ public:
 
   double speed_max_;
 
-  PIDController controller_steer_;
-  PIDController controller_brake_;
+  int last_max_index_;
+
+  PIDController 
+    controller_steer_,
+    controller_brake_dist_,
+    controller_brake_steer_;
+  
   LowPass<double> low_pass_throttle_;
+  LowPass<Eigen::VectorXf> low_pass_hist_;
 
   LucasKanade lucas_kanade_;
   WindowSearch window_search_;

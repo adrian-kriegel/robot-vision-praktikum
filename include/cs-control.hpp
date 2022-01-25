@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <chrono>
+#include <Eigen/Dense>
 
 #include "util.hpp"
 
@@ -133,6 +134,7 @@ namespace cs_control
   private:
     T last_val_;
     bool init_;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
   public:
 
     double alpha_;

@@ -8,7 +8,7 @@ float util::clamp(float val, float minmax)
   return std::min(std::max(val, -minmax), minmax);
 }
 
-int util::plateau_center(
+double util::plateau_center(
   Eigen::MatrixXf hist,
   double height,
   double tol,
@@ -76,19 +76,21 @@ int util::plateau_center(
 
   // if the group starts to the left or ends on the right, return the outermost index
   if (
-    max_group_start == 0
+    max_group_start == 0 && 
+    group_sizes[max_group_start] < hist.size() / 2
   )
   {
     return 0;
   }
 
   if (
-    max_group_start + group_sizes[max_group_start] == hist.size() - 1
+    max_group_start + group_sizes[max_group_start] == hist.size() - 1 &&
+    group_sizes[max_group_start] < hist.size() / 2
   )
   {
     return hist.size() - 1;
   }
 
   // else return the center of the largest group
-  return max_group_start + group_sizes[max_group_start]/2;
+  return (double)max_group_start + (double)group_sizes[max_group_start]/2.0;
 }
