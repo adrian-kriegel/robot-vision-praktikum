@@ -296,7 +296,7 @@ public:
         // points could only travel directly towards the camera if they are in the center
         if (
           (x_hist > 0.3 && x_hist < 0.7) ||
-          OFVectors.at(i).dir.norm() > 1
+          OFVectors.at(i).dir.norm() >= 3
         )
         {
           hist(hist_index) += dist[i];

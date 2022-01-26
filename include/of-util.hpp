@@ -99,17 +99,17 @@ void calc_distances(
 
     if (std::abs(phi_dot) <= 0.1)
     {
-      dist[i] = -std::sin(a) / f;
+      dist[i] = -std::sin(a) / f * v;
     }
     else 
     {
-      disc = f/(2.0*phi_dot) + std::sin(a)*v / phi_dot;
+      disc = std::pow(f/(2.0*phi_dot), 2) + std::sin(a)*v / phi_dot;
 
       if (disc >= 0)
       {
         dist[i] = std::max(
-          f / phi_dot + std::sqrt(disc),
-          f / phi_dot - std::sqrt(disc)
+          f / (2.0*phi_dot) + std::sqrt(disc),
+          f / (2.0*phi_dot) - std::sqrt(disc)
         );
       }
       else 
